@@ -2884,6 +2884,7 @@
   btnOffline.addEventListener("click", () => {
     onlinePanel.classList.add("hidden");
     offlineLevelPanel.classList.remove("hidden");
+    refreshTitleMeta();
   });
 
   btnOfflineBack.addEventListener("click", () => {
@@ -2914,6 +2915,7 @@
   }
 
   restartBtn.addEventListener("click", () => {
+    hideCopyReportHint();
     if (mode === "offline") {
       gameOverEl.classList.add("hidden");
       resetOffline();
@@ -2955,6 +2957,8 @@
     prevMyShotFx = 0;
     teardownSocket();
     netStatus.textContent = "";
+    hideCopyReportHint();
+    refreshTitleMeta();
   });
 
   if (offlineLevelList) {
@@ -2979,5 +2983,12 @@
 
   window.addEventListener("resize", syncCanvasBackingStore);
 
+  if (btnCopyReport) {
+    btnCopyReport.addEventListener("click", () => {
+      copyBattleReportToClipboard();
+    });
+  }
+
+  refreshTitleMeta();
   requestAnimationFrame(frame);
 })();

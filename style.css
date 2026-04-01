@@ -90,8 +90,64 @@ body {
 
 #title-screen .subtitle {
   opacity: 0.85;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   font-size: 15px;
+}
+
+.meta-block {
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: left;
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.progress-summary {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.daily-challenge-summary {
+  color: #a5f3fc;
+  border-color: rgba(56, 189, 248, 0.22);
+}
+
+.achievement-mini {
+  color: rgba(255, 230, 180, 0.92);
+  border-color: rgba(251, 191, 36, 0.2);
+  font-size: 11px;
+}
+
+.hint-subtle {
+  opacity: 0.65;
+  font-size: 11px;
+  margin-top: -6px;
+}
+
+.report-actions {
+  margin-bottom: 16px;
+  pointer-events: auto;
+}
+
+#btn-copy-report {
+  margin-bottom: 8px;
+}
+
+.copy-report-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.85;
+  margin: 0;
+  color: #fde68a;
+}
+
+.copy-report-hint.hidden {
+  display: none !important;
 }
 
 .mode-row {
@@ -310,6 +366,10 @@ button:active {
   margin-bottom: 20px;
   opacity: 0.9;
   white-space: pre-line;
+}
+
+#game-over .copy-report-hint {
+  margin-bottom: 0;
 }
 
 #tutorial-overlay {

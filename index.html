@@ -22,6 +22,9 @@
     <div id="title-screen">
       <h1>枪豆人</h1>
       <p class="subtitle">鼠标瞄准 · 左键射击 · 靠开枪后坐力在水上滑行</p>
+      <p id="progress-summary" class="meta-block progress-summary"></p>
+      <p id="daily-challenge-summary" class="meta-block daily-challenge-summary"></p>
+      <p id="achievement-mini" class="meta-block achievement-mini"></p>
       <div class="mode-row">
         <button type="button" id="btn-offline">单机练习</button>
         <button type="button" id="btn-online" class="primary">联机对战</button>
@@ -37,6 +40,7 @@
           <input type="text" id="room-id" placeholder="默认 public" maxlength="32" autocomplete="off" />
         </label>
         <p class="hint">好友输入同一房间名即可同场。联机需先在本机运行 <code>npm install</code> 与 <code>npm start</code>，再用浏览器打开控制台提示的地址（本地文件打开时会连到 <code>localhost:3333</code>）。</p>
+        <p class="hint hint-subtle">每日挑战与日期种子修正<strong>仅单机生效</strong>；联机沿用服务器规则（实验性提示，与今日挑战无关）。</p>
         <button type="button" id="btn-join" class="primary">进入房间</button>
         <p id="net-status" class="net-status"></p>
       </div>
@@ -44,6 +48,10 @@
     <div id="game-over" class="hidden">
       <h2 id="go-title">游戏结束</h2>
       <p id="go-msg"></p>
+      <div class="report-actions">
+        <button type="button" id="btn-copy-report" class="ghost">复制战报</button>
+        <p id="copy-report-hint" class="copy-report-hint hidden"></p>
+      </div>
       <div class="mode-row">
         <button type="button" id="restart-btn">再来一局</button>
         <button type="button" id="btn-back-menu" class="ghost">返回菜单</button>
