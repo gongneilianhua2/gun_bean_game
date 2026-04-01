@@ -23,6 +23,11 @@
   const offlineLevelPanel = document.getElementById("offline-level-panel");
   const offlineLevelList = document.getElementById("offline-level-list");
   const btnOfflineBack = document.getElementById("btn-offline-back");
+  const tutorialOverlay = document.getElementById("tutorial-overlay");
+  const tutorialTitle = document.getElementById("tutorial-title");
+  const tutorialText = document.getElementById("tutorial-text");
+  const btnTutorialNext = document.getElementById("btn-tutorial-next");
+  const btnTutorialSkip = document.getElementById("btn-tutorial-skip");
 
   /** 逻辑场地尺寸（与 server.js 一致）；物理分辨率由画布 backing store × letterbox 拉伸 */
   const W = 960;
@@ -280,6 +285,28 @@
     },
   ];
 
+  const TUTORIAL_KEY = "qdr_tutorial_done_v1";
+  let tutorialActive = false;
+  let tutorialStep = 0;
+  const TUTORIAL_STEPS = [
+    {
+      title: "1/4 核心移动",
+      text: "本作不是 WASD 移动。你要用鼠标瞄准并开枪，利用后坐力把自己往反方向推开。",
+    },
+    {
+      title: "2/4 墙边技巧",
+      text: "贴近边缘朝墙开枪，会获得更强反冲。可快速变向脱离危险区域。",
+    },
+    {
+      title: "3/4 风险控制",
+      text: "持续高强度开火会更难控位。注意边界、敌群和自身生命，避免被连击。",
+    },
+    {
+      title: "4/4 拾取与节奏",
+      text: "击败敌人会掉落强化。优先保证生存，再追求高输出与连杀节奏。",
+    },
+  ];
+
   const keys = {};
   let mouse = { x: 0, y: 0, down: false };
   let screenShake = 0;
@@ -334,6 +361,52 @@
     } catch (_e) {
       return "ck_mem_" + Math.random().toString(36).slice(2);
     }
+  }
+
+  function shouldShowTutorial() {
+    try {
+      return localStorage.getItem(TUTORIAL_KEY) !== "1";
+    } catch (_e) {
+      return true;
+    }
+  }
+
+  function markTutorialDone() {
+    try {
+      localStorage.setItem(TUTORIAL_KEY, "1");
+    } catch (_e) {}
+  }
+
+  function renderTutorialStep() {
+    const step = TUTORIAL_STEPS[tutorialStep];
+    if (!step) return;
+    tutorialTitle.textContent = step.title;
+    tutorialText.textContent = step.text;
+    btnTutorialNext.textContent =
+      tutorialStep >= TUTORIAL_STEPS.length - 1 ? "开始战斗" : "下一步";
+  }
+
+  function startTutorial() {
+    tutorialActive = true;
+    tutorialStep = 0;
+    tutorialOverlay.classList.remove("hidden");
+    renderTutorialStep();
+  }
+
+  function endTutorial(completed) {
+    tutorialActive = false;
+    tutorialOverlay.classList.add("hidden");
+    if (completed) markTutorialDone();
+  }
+
+  function advanceTutorialStep() {
+    if (!tutorialActive) return;
+    tutorialStep += 1;
+    if (tutorialStep >= TUTORIAL_STEPS.length) {
+      endTutorial(true);
+      return;
+    }
+    renderTutorialStep();
   }
 
   function spawnPlayer() {
@@ -491,6 +564,9 @@
     resetOffline();
     mode = "offline";
     state = "play";
+    if (shouldShowTutorial()) {
+      startTutorial();
+    }
   }
 
   function teardownSocket() {
@@ -1332,6 +1408,7 @@
 
   function updateOffline(dt) {
     if (mode !== "offline" || state !== "play") return;
+    if (tutorialActive) return;
 
     const p = clientToArena(mouse.x, mouse.y);
     const mx = p.x;
@@ -1989,6 +2066,7 @@
 
   function sendOnlineInput() {
     if (mode !== "online" || !socket || !socket.connected) return;
+    if (tutorialActive) return;
     const p = clientToArena(mouse.x, mouse.y);
     const mx = p.x;
     const my = p.y;
@@ -2093,6 +2171,18 @@
       socket.emit("restartMatch");
     }
   });
+
+  if (btnTutorialNext) {
+    btnTutorialNext.addEventListener("click", () => {
+      advanceTutorialStep();
+    });
+  }
+
+  if (btnTutorialSkip) {
+    btnTutorialSkip.addEventListener("click", () => {
+      endTutorial(true);
+    });
+  }
 
   btnBackMenu.addEventListener("click", () => {
     gameOverEl.classList.add("hidden");

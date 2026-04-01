@@ -256,3 +256,39 @@ button:active {
   margin-bottom: 20px;
   opacity: 0.9;
 }
+
+#tutorial-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 12, 24, 0.62);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+#tutorial-overlay.hidden {
+  display: none !important;
+}
+
+.tutorial-card {
+  width: min(520px, calc(100vw - 32px));
+  background: rgba(15, 20, 40, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  padding: 22px 20px;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.45);
+  text-align: left;
+}
+
+#tutorial-title {
+  margin-bottom: 10px;
+  font-size: 20px;
+}
+
+#tutorial-text {
+  line-height: 1.65;
+  opacity: 0.95;
+  margin-bottom: 16px;
+  min-height: 72px;
+}

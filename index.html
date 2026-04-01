@@ -44,6 +44,16 @@
         <button type="button" id="btn-back-menu" class="ghost">返回菜单</button>
       </div>
     </div>
+    <div id="tutorial-overlay" class="hidden">
+      <div class="tutorial-card">
+        <h3 id="tutorial-title">新手引导</h3>
+        <p id="tutorial-text"></p>
+        <div class="mode-row">
+          <button type="button" id="btn-tutorial-next" class="primary">下一步</button>
+          <button type="button" id="btn-tutorial-skip" class="ghost">跳过</button>
+        </div>
+      </div>
+    </div>
   </div>
   <canvas id="game" width="960" height="540"></canvas>
   <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
