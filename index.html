@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>枪豆人</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="ui">
+    <div id="hud" class="hidden">
+      <span id="score">得分 0</span>
+      <span id="health">生命 ♥♥♥</span>
+      <span id="lobby-hint" class="hidden"></span>
+      <button type="button" id="btn-ready" class="hidden">准备</button>
+    </div>
+    <div id="title-screen">
+      <h1>枪豆人</h1>
+      <p class="subtitle">鼠标瞄准 · 左键射击 · 靠开枪后坐力在水上滑行</p>
+      <div class="mode-row">
+        <button type="button" id="btn-offline">单机练习</button>
+        <button type="button" id="btn-online" class="primary">联机对战</button>
+      </div>
+      <div id="offline-level-panel" class="hidden">
+        <p class="panel-title">单机 — 选择起始关卡</p>
+        <div id="offline-level-list" class="level-list"></div>
+        <button type="button" id="btn-offline-back" class="ghost wide-btn">返回</button>
+      </div>
+      <div id="online-panel" class="hidden">
+        <label class="field">
+          <span>房间名</span>
+          <input type="text" id="room-id" placeholder="默认 public" maxlength="32" autocomplete="off" />
+        </label>
+        <p class="hint">好友输入同一房间名即可同场。联机需先在本机运行 <code>npm install</code> 与 <code>npm start</code>，再用浏览器打开控制台提示的地址（本地文件打开时会连到 <code>localhost:3333</code>）。</p>
+        <button type="button" id="btn-join" class="primary">进入房间</button>
+        <p id="net-status" class="net-status"></p>
+      </div>
+    </div>
+    <div id="game-over" class="hidden">
+      <h2 id="go-title">游戏结束</h2>
+      <p id="go-msg"></p>
+      <div class="mode-row">
+        <button type="button" id="restart-btn">再来一局</button>
+        <button type="button" id="btn-back-menu" class="ghost">返回菜单</button>
+      </div>
+    </div>
+  </div>
+  <canvas id="game" width="960" height="540"></canvas>
+  <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,258 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  min-height: 100%;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  margin: 0;
+  overscroll-behavior: none;
+  background: #0a1428;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #eee;
+}
+
+#game {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  display: block;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+}
+
+#hud {
+  pointer-events: none;
+  display: flex;
+  gap: 24px;
+  font-size: 18px;
+  font-weight: 600;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+#title-screen,
+#game-over {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: auto;
+  background: rgba(15, 20, 40, 0.92);
+  padding: 32px 48px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+#title-screen h1 {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+  background: linear-gradient(90deg, #ffd93d, #ff6b6b);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+#title-screen .subtitle {
+  opacity: 0.85;
+  margin-bottom: 20px;
+  font-size: 15px;
+}
+
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.mode-row button.primary {
+  background: linear-gradient(135deg, #4ecdc4, #38bdf8);
+}
+
+button.ghost {
+  background: rgba(255, 255, 255, 0.12);
+  color: #eee;
+}
+
+button.ghost:hover {
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.08);
+}
+
+#online-panel {
+  margin-top: 8px;
+  text-align: left;
+  max-width: 360px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+#offline-level-panel {
+  margin-top: 12px;
+  text-align: left;
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.panel-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  opacity: 0.95;
+  text-align: center;
+}
+
+.level-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+button.level-pick {
+  width: 100%;
+  justify-content: center;
+  text-align: center;
+  padding: 12px 16px;
+  font-size: 15px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+button.level-pick:hover {
+  background: rgba(78, 205, 196, 0.22);
+  border-color: rgba(78, 205, 196, 0.45);
+}
+
+button.wide-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+#online-panel.hidden {
+  display: none !important;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.field input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 15px;
+}
+
+.field input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.hint {
+  font-size: 12px;
+  opacity: 0.75;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.hint code {
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.net-status {
+  font-size: 13px;
+  min-height: 1.2em;
+  margin-top: 8px;
+  color: #ffe66d;
+}
+
+#lobby-hint {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+#btn-ready {
+  padding: 8px 16px;
+  font-size: 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+button {
+  pointer-events: auto;
+  padding: 12px 28px;
+  font-size: 16px;
+  font-weight: 600;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #e94560, #c73e54);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+button:hover {
+  transform: scale(1.05);
+  box-shadow: 0 8px 24px rgba(233, 69, 96, 0.45);
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+.hidden {
+  display: none !important;
+}
+
+#game-over h2 {
+  margin-bottom: 12px;
+}
+
+#game-over p {
+  margin-bottom: 20px;
+  opacity: 0.9;
+}
