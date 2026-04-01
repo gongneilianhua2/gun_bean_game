@@ -335,6 +335,7 @@
   let offlineBuffs;
   let offlinePerks;
   let offlineWaveClearPending;
+  let offlineRunStats;
   let particles = [];
   let hitIndicators = [];
   let score;
@@ -503,6 +504,17 @@
       maxHpBonus: 0,
     };
     offlineWaveClearPending = false;
+    offlineRunStats = {
+      shots: 0,
+      hits: 0,
+      kills: 0,
+      pickups: 0,
+      damageTaken: 0,
+      shieldBlocks: 0,
+      startLevel: 1,
+      maxLevelReached: 1,
+      maxWaveReached: 1,
+    };
     particles = [];
     score = 0;
     const start = Math.max(
@@ -510,6 +522,7 @@
       Math.min(OFFLINE_LEVELS.length - 1, offlineStartLevelIndex | 0)
     );
     offlineLevelIndex = start;
+    offlineRunStats.startLevel = start + 1;
     wave = 1;
     if (!OFFLINE_ENEMIES_DISABLED) spawnOfflineWave(1);
     hudScore.textContent = "得分 " + score;
@@ -524,6 +537,7 @@
 
   function applyOfflinePickup(type) {
     if (!offlineBuffs) return;
+    if (offlineRunStats) offlineRunStats.pickups += 1;
     if (type === "shotgun") {
       offlineBuffs.shotgunT = Math.max(offlineBuffs.shotgunT || 0, SHOTGUN_BUFF_DURATION);
       return;
@@ -870,13 +884,36 @@
     state = "over";
     goTitle.textContent = won ? "通关！" : "游戏结束";
     const nLv = OFFLINE_LEVELS.length;
-    goMsg.textContent = won
+    const topLine = won
       ? "得分 " + score + " — " +
         (offlineStartLevelIndex > 0
           ? "从第 " + (offlineStartLevelIndex + 1) + " 关起连胜至通关！"
           : "完成全部 " + nLv + " 关！")
       : "得分 " + score + " — 第 " + (offlineLevelIndex + 1) + " 关 · 第 " + wave + " 波";
+    goMsg.textContent = topLine + "\n\n" + buildOfflineRunReport(won);
     gameOverEl.classList.remove("hidden");
+  }
+
+  function buildOfflineRunReport(won) {
+    if (!offlineRunStats) return "";
+    const s = offlineRunStats;
+    const acc = s.shots > 0 ? Math.round((s.hits / s.shots) * 100) : 0;
+    const lines = [
+      "战报：命中率 " + acc + "% · 击杀 " + s.kills + " · 拾取 " + s.pickups,
+      "受击 " + s.damageTaken + " 次 · 护盾抵挡 " + s.shieldBlocks + " 次",
+      "推进至第 " + s.maxLevelReached + " 关 · 最高第 " + s.maxWaveReached + " 波",
+    ];
+    if (won) {
+      lines.push("建议：可尝试提高开火节奏，冲击更高分。");
+      return lines.join("\n");
+    }
+    const tips = [];
+    if (s.pickups <= 1) tips.push("多走位吃掉落（护盾/快射）提升容错。");
+    if (acc < 32) tips.push("先稳瞄再开火，减少空枪。");
+    if (s.damageTaken >= 3) tips.push("优先与敌人拉开距离，避免贴脸吃弹。");
+    if (tips.length === 0) tips.push("节奏接近通关，再试一次就有机会。");
+    lines.push("建议：" + tips.slice(0, 2).join(" "));
+    return lines.join("\n");
   }
 
   let state = "menu";
@@ -1790,6 +1827,7 @@
             shotgun: true,
           });
         }
+        if (offlineRunStats) offlineRunStats.shots += spreads.length;
       } else {
         bullets.push({
           x: mzx,
@@ -1800,6 +1838,7 @@
           life: 1.2,
           damage: 1,
         });
+        if (offlineRunStats) offlineRunStats.shots += 1;
       }
       const rapidMul = offlineBuffs && offlineBuffs.rapidfireT > 0 ? 1.4 : 1;
       player.shootCd = PLAYER_SHOOT_CD / ((offlinePerks ? offlinePerks.fireRateMul : 1) * rapidMul);
@@ -1887,6 +1926,7 @@
         const d = vecLen(b.x - player.x, b.y - player.y);
         const shieldOn = offlineBuffs && offlineBuffs.shieldT > 0;
         if (d < player.r + 4 && player.invuln <= 0 && !shieldOn) {
+          if (offlineRunStats) offlineRunStats.damageTaken += 1;
           player.hp--;
           player.invuln = 1;
           pushHitIndicator(Math.atan2(-(b.vy || 0.001), -(b.vx || 0.001)));
@@ -1900,6 +1940,9 @@
           bullets.splice(i, 1);
           updateHealthHudOffline();
           if (player.hp <= 0) endGameOffline(false);
+        } else if (d < player.r + 4 && player.invuln <= 0 && shieldOn) {
+          if (offlineRunStats) offlineRunStats.shieldBlocks += 1;
+          bullets.splice(i, 1);
         }
       }
     }
@@ -1968,6 +2011,7 @@
           if (vecLen(b.x - e.x, b.y - e.y) < e.r + 6) {
             e.hp -= b.damage != null ? b.damage : 1;
             bullets.splice(bi, 1);
+            if (offlineRunStats) offlineRunStats.hits += 1;
             addHitScatter(b.x, b.y, b.vx, b.vy, e.hp <= 0 ? "impactHeavy" : "victimEnemy");
             if (e.hp <= 0) {
               if (Math.random() < PICKUP_DROP_BASE || e.r >= 26 || e.hp <= -4) {
@@ -1980,6 +2024,7 @@
                 if (pickups.length > 6) pickups.splice(0, pickups.length - 6);
               }
               enemies.splice(ei, 1);
+              if (offlineRunStats) offlineRunStats.kills += 1;
               score += 100;
               hudScore.textContent = "得分 " + score;
             }
@@ -1990,6 +2035,10 @@
 
       if (enemies.length === 0) {
         offlineWaveClearPending = true;
+        if (offlineRunStats) {
+          offlineRunStats.maxLevelReached = Math.max(offlineRunStats.maxLevelReached, offlineLevelIndex + 1);
+          offlineRunStats.maxWaveReached = Math.max(offlineRunStats.maxWaveReached, wave);
+        }
         openOfflinePerkChoice();
       }
     }

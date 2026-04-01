@@ -309,6 +309,7 @@ button:active {
 #game-over p {
   margin-bottom: 20px;
   opacity: 0.9;
+  white-space: pre-line;
 }
 
 #tutorial-overlay {
