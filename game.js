@@ -1223,22 +1223,6 @@
     ctx.restore();
   }
 
-  function drawAimGuide(x, y, angle, len, color) {
-    const ex = x + Math.cos(angle) * len;
-    const ey = y + Math.sin(angle) * len;
-    ctx.save();
-    ctx.setLineDash([7, 7]);
-    ctx.lineDashOffset = -(performance.now() * 0.03);
-    ctx.strokeStyle = color || "rgba(255,255,255,0.55)";
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(ex, ey);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
-
   function addParticles(x, y, color, n) {
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -1603,7 +1587,7 @@
         }
       }
 
-      // Soft separation so enemies do not visually stack.
+      // Prevent enemy beans from passing through each other.
       for (let i = 0; i < enemies.length; i++) {
         for (let j = i + 1; j < enemies.length; j++) {
           const a = enemies[i];
@@ -1705,7 +1689,6 @@
       gunRecoil: player.gunRecoil,
     });
     if (flash) ctx.globalAlpha = 1;
-    drawAimGuide(player.x, player.y, player.angle, 74, "rgba(180, 240, 255, 0.7)");
 
     for (const b of bullets) {
       const pl = b.from === "player";
@@ -1859,9 +1842,6 @@
     } else {
       prevOnlineCapsizeFx = 0;
       drawOnlineCrew();
-    }
-    if (mePl && mePl.respawnMs <= 0 && mePl.hp > 0) {
-      drawAimGuide(mePl.x, mePl.y, mePl.angle, 74, "rgba(180, 240, 255, 0.7)");
     }
     for (const e of netState.enemies || []) {
       const ec =

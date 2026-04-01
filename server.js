@@ -804,7 +804,7 @@ function simRoom(room, dt, io) {
     }
   }
 
-  // Soft separation so enemy beans don't overlap each other.
+  // Prevent enemy beans from passing through each other.
   for (let i = 0; i < room.enemies.length; i++) {
     for (let j = i + 1; j < room.enemies.length; j++) {
       const a = room.enemies[i];
