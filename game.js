@@ -108,6 +108,8 @@
   const PICKUP_DROP_BASE = 0.22;
   const PICKUP_AUTO_PICK_RADIUS = 42;
   const SHOTGUN_BUFF_DURATION = 6;
+  const SHIELD_BUFF_DURATION = 7;
+  const RAPIDFIRE_BUFF_DURATION = 6;
   const BOAT_HULL_SCALE = 0.55;
   const GUN_SCALE = 0.55;
   const WALL_AUTO_POP_ZONE = 44;
@@ -491,7 +493,7 @@
     bullets = [];
     enemies = [];
     pickups = [];
-    offlineBuffs = { shotgunT: 0 };
+    offlineBuffs = { shotgunT: 0, shieldT: 0, rapidfireT: 0 };
     offlinePerks = {
       recoilMul: 1,
       bulletSpeedMul: 1,
@@ -517,6 +519,28 @@
     const mh = Math.max(1, player.maxHp || 3);
     const h = Math.max(0, Math.min(mh, player.hp));
     hudHealth.textContent = "生命 " + "♥".repeat(h) + (h < mh ? "♡".repeat(mh - h) : "");
+  }
+
+  function applyOfflinePickup(type) {
+    if (!offlineBuffs) return;
+    if (type === "shotgun") {
+      offlineBuffs.shotgunT = Math.max(offlineBuffs.shotgunT || 0, SHOTGUN_BUFF_DURATION);
+      return;
+    }
+    if (type === "shield") {
+      offlineBuffs.shieldT = Math.max(offlineBuffs.shieldT || 0, SHIELD_BUFF_DURATION);
+      return;
+    }
+    if (type === "rapidfire") {
+      offlineBuffs.rapidfireT = Math.max(offlineBuffs.rapidfireT || 0, RAPIDFIRE_BUFF_DURATION);
+    }
+  }
+
+  function randomPickupTypeOffline() {
+    const r = Math.random();
+    if (r < 0.5) return "shotgun";
+    if (r < 0.78) return "shield";
+    return "rapidfire";
   }
 
   const OFFLINE_PERK_POOL = [
@@ -695,6 +719,18 @@
         badges.push({
           kind: "buff",
           text: "散弹 " + (netState.teamBuffs.shotgunMs / 1000).toFixed(1) + "s",
+        });
+      }
+      if (netState.teamBuffs && netState.teamBuffs.shieldMs > 0) {
+        badges.push({
+          kind: "buff",
+          text: "护盾 " + (netState.teamBuffs.shieldMs / 1000).toFixed(1) + "s",
+        });
+      }
+      if (netState.teamBuffs && netState.teamBuffs.rapidfireMs > 0) {
+        badges.push({
+          kind: "buff",
+          text: "快射 " + (netState.teamBuffs.rapidfireMs / 1000).toFixed(1) + "s",
         });
       }
       if (badges.length > 0) {
@@ -1619,6 +1655,12 @@
     if (offlineBuffs && offlineBuffs.shotgunT > 0) {
       offlineBuffs.shotgunT = Math.max(0, offlineBuffs.shotgunT - dt);
     }
+    if (offlineBuffs && offlineBuffs.shieldT > 0) {
+      offlineBuffs.shieldT = Math.max(0, offlineBuffs.shieldT - dt);
+    }
+    if (offlineBuffs && offlineBuffs.rapidfireT > 0) {
+      offlineBuffs.rapidfireT = Math.max(0, offlineBuffs.rapidfireT - dt);
+    }
     for (let i = pickups.length - 1; i >= 0; i--) {
       const pk = pickups[i];
       pk.life -= dt;
@@ -1629,9 +1671,7 @@
       const pickR =
         PICKUP_AUTO_PICK_RADIUS * (1 + (offlinePerks ? offlinePerks.pickupRadiusBonus : 0));
       if (vecLen(pk.x - player.x, pk.y - player.y) <= pickR) {
-        if (pk.type === "shotgun") {
-          offlineBuffs.shotgunT = Math.max(offlineBuffs.shotgunT || 0, SHOTGUN_BUFF_DURATION);
-        }
+        applyOfflinePickup(pk.type);
         pickups.splice(i, 1);
       }
     }
@@ -1709,7 +1749,8 @@
           damage: 1,
         });
       }
-      player.shootCd = PLAYER_SHOOT_CD / (offlinePerks ? offlinePerks.fireRateMul : 1);
+      const rapidMul = offlineBuffs && offlineBuffs.rapidfireT > 0 ? 1.4 : 1;
+      player.shootCd = PLAYER_SHOOT_CD / ((offlinePerks ? offlinePerks.fireRateMul : 1) * rapidMul);
       player.muzzleFlash = 1.18;
       player.gunRecoil = 0.45;
       player.vx -= dir.x * kick;
@@ -1792,7 +1833,8 @@
       }
       if (b.from === "enemy") {
         const d = vecLen(b.x - player.x, b.y - player.y);
-        if (d < player.r + 4 && player.invuln <= 0) {
+        const shieldOn = offlineBuffs && offlineBuffs.shieldT > 0;
+        if (d < player.r + 4 && player.invuln <= 0 && !shieldOn) {
           player.hp--;
           player.invuln = 1;
           addHitScatter(
@@ -1877,7 +1919,7 @@
             if (e.hp <= 0) {
               if (Math.random() < PICKUP_DROP_BASE || e.r >= 26 || e.hp <= -4) {
                 pickups.push({
-                  type: "shotgun",
+                  type: randomPickupTypeOffline(),
                   x: e.x + rand(-14, 14),
                   y: e.y + rand(-14, 14),
                   life: PICKUP_LIFE,
@@ -1995,6 +2037,35 @@
         ctx.moveTo(pk.x - 10, pk.y + 12);
         ctx.lineTo(pk.x + 10, pk.y + 2);
         ctx.stroke();
+      } else if (pk.type === "shield") {
+        ctx.fillStyle = "rgba(80,170,255,0.16)";
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(125,200,255,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 10, Math.PI * 0.2, Math.PI * 1.8);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(pk.x, pk.y - 10);
+        ctx.lineTo(pk.x, pk.y + 10);
+        ctx.stroke();
+      } else if (pk.type === "rapidfire") {
+        ctx.fillStyle = "rgba(255,120,80,0.16)";
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,170,120,0.95)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pk.x - 8, pk.y + 8);
+        ctx.lineTo(pk.x - 1, pk.y - 8);
+        ctx.lineTo(pk.x + 2, pk.y - 1);
+        ctx.lineTo(pk.x + 8, pk.y - 1);
+        ctx.lineTo(pk.x + 1, pk.y + 8);
+        ctx.closePath();
+        ctx.stroke();
       }
       ctx.globalAlpha = 1;
     }
@@ -2006,6 +2077,12 @@
         : "第 " + wave + " 波";
       if (offlineBuffs && offlineBuffs.shotgunT > 0) {
         subtitle += " · 散弹 " + offlineBuffs.shotgunT.toFixed(1) + "s";
+      }
+      if (offlineBuffs && offlineBuffs.shieldT > 0) {
+        subtitle += " · 护盾 " + offlineBuffs.shieldT.toFixed(1) + "s";
+      }
+      if (offlineBuffs && offlineBuffs.rapidfireT > 0) {
+        subtitle += " · 快射 " + offlineBuffs.rapidfireT.toFixed(1) + "s";
       }
       ctx.fillStyle = "rgba(255,255,255,0.72)";
       ctx.font = "13px sans-serif";
@@ -2160,6 +2237,35 @@
         ctx.beginPath();
         ctx.moveTo(pk.x - 10, pk.y + 12);
         ctx.lineTo(pk.x + 10, pk.y + 2);
+        ctx.stroke();
+      } else if (pk.type === "shield") {
+        ctx.fillStyle = "rgba(80,170,255,0.16)";
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(125,200,255,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 10, Math.PI * 0.2, Math.PI * 1.8);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(pk.x, pk.y - 10);
+        ctx.lineTo(pk.x, pk.y + 10);
+        ctx.stroke();
+      } else if (pk.type === "rapidfire") {
+        ctx.fillStyle = "rgba(255,120,80,0.16)";
+        ctx.beginPath();
+        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,170,120,0.95)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pk.x - 8, pk.y + 8);
+        ctx.lineTo(pk.x - 1, pk.y - 8);
+        ctx.lineTo(pk.x + 2, pk.y - 1);
+        ctx.lineTo(pk.x + 8, pk.y - 1);
+        ctx.lineTo(pk.x + 1, pk.y + 8);
+        ctx.closePath();
         ctx.stroke();
       }
       ctx.globalAlpha = 1;

@@ -43,6 +43,8 @@ const PICKUP_LIFE_MS = 12000;
 const PICKUP_AUTO_PICK_R = 42;
 const PICKUP_DROP_BASE = 0.22;
 const SHOTGUN_DURATION_MS = 6000;
+const SHIELD_DURATION_MS = 7000;
+const RAPIDFIRE_DURATION_MS = 6000;
 const GUN_SCALE = 0.55;
 const WALL_AUTO_POP_ZONE = 44;
 const WALL_AUTO_POP_PUSH = 900;
@@ -239,9 +241,11 @@ function maybeDropPickup(room, enemy, forceHighValue) {
   const pDrop = forceHighValue ? 1 : enemy.type === "boss" ? 1 : PICKUP_DROP_BASE;
   if (roll > pDrop) return;
   const now = Date.now();
+  const typeRoll = Math.random();
+  const type = typeRoll < 0.5 ? "shotgun" : typeRoll < 0.78 ? "shield" : "rapidfire";
   room.pickups.push({
     id: "pk_" + Math.random().toString(36).slice(2),
-    type: "shotgun",
+    type,
     x: enemy.x + rand(-14, 14),
     y: enemy.y + rand(-14, 14),
     until: now + PICKUP_LIFE_MS,
@@ -300,6 +304,8 @@ function getOrCreateRoom(roomId) {
       pickups: [],
       teamBuffs: {
         shotgunUntil: 0,
+        shieldUntil: 0,
+        rapidfireUntil: 0,
       },
       started: false,
       matchOver: false,
@@ -389,7 +395,7 @@ function resetMatch(room) {
   room.capsizeFx = 0;
   room.waveReport = null;
   room.pickups = [];
-  room.teamBuffs = { shotgunUntil: 0 };
+  room.teamBuffs = { shotgunUntil: 0, shieldUntil: 0, rapidfireUntil: 0 };
   room.levelIndex = 0;
   room.wave = 1;
   room.waveEvent = "none";
@@ -483,6 +489,8 @@ function simRoom(room, dt, io) {
   room.lastInputs = inputs;
   const nowMs = Date.now();
   const shotgunOn = room.teamBuffs && room.teamBuffs.shotgunUntil > nowMs;
+  const shieldOn = room.teamBuffs && room.teamBuffs.shieldUntil > nowMs;
+  const rapidfireOn = room.teamBuffs && room.teamBuffs.rapidfireUntil > nowMs;
 
   for (const [id, p] of [...room.players.entries()]) {
     if (!p.connected && p.disconnectedUntil > 0 && nowMs >= p.disconnectedUntil) {
@@ -638,7 +646,8 @@ function simRoom(room, dt, io) {
         damage: 1,
       });
     }
-    p.shootCd = SHOOT_CD;
+    const rapidMul = rapidfireOn ? 1.4 : 1;
+    p.shootCd = SHOOT_CD / rapidMul;
     p.shotFx = 1.15;
     shotsThisFrame += 1;
     B.pvx -= dir.x * kick;
@@ -732,6 +741,11 @@ function simRoom(room, dt, io) {
     if (d <= PICKUP_AUTO_PICK_R) {
       if (pk.type === "shotgun") {
         room.teamBuffs.shotgunUntil = Math.max(room.teamBuffs.shotgunUntil || 0, nowMs) + SHOTGUN_DURATION_MS;
+      } else if (pk.type === "shield") {
+        room.teamBuffs.shieldUntil = Math.max(room.teamBuffs.shieldUntil || 0, nowMs) + SHIELD_DURATION_MS;
+      } else if (pk.type === "rapidfire") {
+        room.teamBuffs.rapidfireUntil =
+          Math.max(room.teamBuffs.rapidfireUntil || 0, nowMs) + RAPIDFIRE_DURATION_MS;
       }
       room.pickups.splice(i, 1);
     }
@@ -839,6 +853,7 @@ function simRoom(room, dt, io) {
         if (p.hp <= 0) continue;
         if (p.respawnAt > 0 && Date.now() < p.respawnAt) continue;
         if (p.invuln > 0) continue;
+        if (shieldOn) continue;
         const wp = worldPos(room, p);
         const d = vecLen(b.x - wp.x, b.y - wp.y);
         if (d < PLAYER_R + 6) {
@@ -1016,6 +1031,11 @@ function serializeRoom(room) {
     waveEvent: room.waveEvent || "none",
     teamBuffs: {
       shotgunMs: Math.max(0, (room.teamBuffs && room.teamBuffs.shotgunUntil ? room.teamBuffs.shotgunUntil : 0) - now),
+      shieldMs: Math.max(0, (room.teamBuffs && room.teamBuffs.shieldUntil ? room.teamBuffs.shieldUntil : 0) - now),
+      rapidfireMs: Math.max(
+        0,
+        (room.teamBuffs && room.teamBuffs.rapidfireUntil ? room.teamBuffs.rapidfireUntil : 0) - now
+      ),
     },
     waveReport:
       wr && wr.until > now
