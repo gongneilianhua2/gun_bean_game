@@ -32,6 +32,9 @@
   const tutorialText = document.getElementById("tutorial-text");
   const btnTutorialNext = document.getElementById("btn-tutorial-next");
   const btnTutorialSkip = document.getElementById("btn-tutorial-skip");
+  const perkOverlay = document.getElementById("perk-overlay");
+  const perkSubtitle = document.getElementById("perk-subtitle");
+  const perkOptions = document.getElementById("perk-options");
 
   /** 逻辑场地尺寸（与 server.js 一致）；物理分辨率由画布 backing store × letterbox 拉伸 */
   const W = 960;
@@ -328,6 +331,8 @@
   let enemies;
   let pickups;
   let offlineBuffs;
+  let offlinePerks;
+  let offlineWaveClearPending;
   let particles = [];
   let score;
   let wave;
@@ -421,6 +426,7 @@
       vx: 0,
       vy: 0,
       hp: 3,
+      maxHp: 3,
       shootCd: 0,
       angle: 0,
       invuln: 0,
@@ -486,6 +492,14 @@
     enemies = [];
     pickups = [];
     offlineBuffs = { shotgunT: 0 };
+    offlinePerks = {
+      recoilMul: 1,
+      bulletSpeedMul: 1,
+      fireRateMul: 1,
+      pickupRadiusBonus: 0,
+      maxHpBonus: 0,
+    };
+    offlineWaveClearPending = false;
     particles = [];
     score = 0;
     const start = Math.max(
@@ -500,8 +514,136 @@
   }
 
   function updateHealthHudOffline() {
-    const h = Math.max(0, player.hp);
-    hudHealth.textContent = "生命 " + "♥".repeat(h) + (h < 3 ? "♡".repeat(3 - h) : "");
+    const mh = Math.max(1, player.maxHp || 3);
+    const h = Math.max(0, Math.min(mh, player.hp));
+    hudHealth.textContent = "生命 " + "♥".repeat(h) + (h < mh ? "♡".repeat(mh - h) : "");
+  }
+
+  const OFFLINE_PERK_POOL = [
+    {
+      id: "recoil_boost",
+      title: "推进强化",
+      desc: "后坐力 +20%",
+      apply() {
+        offlinePerks.recoilMul *= 1.2;
+      },
+    },
+    {
+      id: "bullet_speed",
+      title: "高压弹芯",
+      desc: "子弹速度 +15%",
+      apply() {
+        offlinePerks.bulletSpeedMul *= 1.15;
+      },
+    },
+    {
+      id: "rapid_fire",
+      title: "快扳机",
+      desc: "射速 +18%",
+      apply() {
+        offlinePerks.fireRateMul *= 1.18;
+      },
+    },
+    {
+      id: "magnet",
+      title: "磁吸回收",
+      desc: "拾取范围 +30%",
+      apply() {
+        offlinePerks.pickupRadiusBonus += 0.3;
+      },
+    },
+    {
+      id: "reinforced",
+      title: "加固船体",
+      desc: "最大生命 +1，并回复 1 点",
+      apply() {
+        offlinePerks.maxHpBonus += 1;
+        player.maxHp = 3 + offlinePerks.maxHpBonus;
+        player.hp = Math.min(player.maxHp, player.hp + 1);
+      },
+    },
+  ];
+
+  function pickPerkOptions(n) {
+    const pool = OFFLINE_PERK_POOL.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const t = pool[i];
+      pool[i] = pool[j];
+      pool[j] = t;
+    }
+    return pool.slice(0, Math.min(n, pool.length));
+  }
+
+  function applyOfflinePerk(perkId) {
+    const perk = OFFLINE_PERK_POOL.find((p) => p.id === perkId);
+    if (!perk) return;
+    perk.apply();
+    player.maxHp = 3 + (offlinePerks.maxHpBonus || 0);
+    player.hp = Math.min(player.maxHp, player.hp);
+    updateHealthHudOffline();
+  }
+
+  function openOfflinePerkChoice() {
+    if (!perkOverlay || !perkOptions) {
+      finishOfflineWaveClear();
+      return;
+    }
+    const choices = pickPerkOptions(3);
+    perkOptions.innerHTML = "";
+    for (const c of choices) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "perk-pick";
+      btn.textContent = c.title + "\n" + c.desc;
+      btn.addEventListener("click", () => {
+        applyOfflinePerk(c.id);
+        closeOfflinePerkChoiceAndProceed();
+      });
+      perkOptions.appendChild(btn);
+    }
+    const lvl = OFFLINE_LEVELS[offlineLevelIndex];
+    perkSubtitle.textContent =
+      "第 " +
+      (offlineLevelIndex + 1) +
+      " 关 · 第 " +
+      wave +
+      "/" +
+      (lvl ? lvl.waves.length : 1) +
+      " 波已完成，选择一个强化后继续。";
+    perkOverlay.classList.remove("hidden");
+  }
+
+  function closeOfflinePerkChoiceAndProceed() {
+    if (perkOverlay) perkOverlay.classList.add("hidden");
+    finishOfflineWaveClear();
+  }
+
+  function finishOfflineWaveClear() {
+    if (!offlineWaveClearPending) return;
+    offlineWaveClearPending = false;
+    const lvl = OFFLINE_LEVELS[offlineLevelIndex];
+    if (!lvl) {
+      endGameOffline(true);
+      return;
+    }
+    wave++;
+    if (wave > lvl.waves.length) {
+      const heal = lvl.healOnLevelClear != null ? lvl.healOnLevelClear : 0;
+      if (heal > 0) {
+        player.hp = Math.min(player.maxHp || 3, player.hp + heal);
+        updateHealthHudOffline();
+      }
+      offlineLevelIndex++;
+      if (offlineLevelIndex >= OFFLINE_LEVELS.length) {
+        endGameOffline(true);
+        return;
+      }
+      wave = 1;
+      spawnOfflineWave(1);
+    } else {
+      spawnOfflineWave(wave);
+    }
   }
 
   function updateHudOnline() {
@@ -1444,6 +1586,7 @@
   function updateOffline(dt) {
     if (mode !== "offline" || state !== "play") return;
     if (tutorialActive) return;
+    if (offlineWaveClearPending) return;
 
     const p = clientToArena(mouse.x, mouse.y);
     const mx = p.x;
@@ -1483,7 +1626,9 @@
         pickups.splice(i, 1);
         continue;
       }
-      if (vecLen(pk.x - player.x, pk.y - player.y) <= PICKUP_AUTO_PICK_RADIUS) {
+      const pickR =
+        PICKUP_AUTO_PICK_RADIUS * (1 + (offlinePerks ? offlinePerks.pickupRadiusBonus : 0));
+      if (vecLen(pk.x - player.x, pk.y - player.y) <= pickR) {
         if (pk.type === "shotgun") {
           offlineBuffs.shotgunT = Math.max(offlineBuffs.shotgunT || 0, SHOTGUN_BUFF_DURATION);
         }
@@ -1494,7 +1639,7 @@
     if (mouse.down && player.shootCd <= 0) {
       let dir = normalize(Math.cos(player.angle), Math.sin(player.angle));
       const eps = WALL_TOUCH_EPS;
-      let kick = RECOIL_IMPULSE;
+      let kick = RECOIL_IMPULSE * (offlinePerks ? offlinePerks.recoilMul : 1);
       const atLeft = player.x <= loX + eps;
       const atRight = player.x >= hiX - eps;
       const atTop = player.y <= loY + eps;
@@ -1545,8 +1690,8 @@
           bullets.push({
             x: mzx,
             y: mzy,
-            vx: Math.cos(a) * PLAYER_BULLET_SPEED * 0.92,
-            vy: Math.sin(a) * PLAYER_BULLET_SPEED * 0.92,
+            vx: Math.cos(a) * PLAYER_BULLET_SPEED * (offlinePerks ? offlinePerks.bulletSpeedMul : 1) * 0.92,
+            vy: Math.sin(a) * PLAYER_BULLET_SPEED * (offlinePerks ? offlinePerks.bulletSpeedMul : 1) * 0.92,
             from: "player",
             life: 1.2 * 0.78,
             damage: 0.55,
@@ -1557,14 +1702,14 @@
         bullets.push({
           x: mzx,
           y: mzy,
-          vx: dir.x * PLAYER_BULLET_SPEED,
-          vy: dir.y * PLAYER_BULLET_SPEED,
+          vx: dir.x * PLAYER_BULLET_SPEED * (offlinePerks ? offlinePerks.bulletSpeedMul : 1),
+          vy: dir.y * PLAYER_BULLET_SPEED * (offlinePerks ? offlinePerks.bulletSpeedMul : 1),
           from: "player",
           life: 1.2,
           damage: 1,
         });
       }
-      player.shootCd = PLAYER_SHOOT_CD;
+      player.shootCd = PLAYER_SHOOT_CD / (offlinePerks ? offlinePerks.fireRateMul : 1);
       player.muzzleFlash = 1.18;
       player.gunRecoil = 0.45;
       player.vx -= dir.x * kick;
@@ -1749,28 +1894,8 @@
       }
 
       if (enemies.length === 0) {
-        const lvl = OFFLINE_LEVELS[offlineLevelIndex];
-        if (!lvl) {
-          endGameOffline(true);
-          return;
-        }
-        wave++;
-        if (wave > lvl.waves.length) {
-          const heal = lvl.healOnLevelClear != null ? lvl.healOnLevelClear : 0;
-          if (heal > 0) {
-            player.hp = Math.min(3, player.hp + heal);
-            updateHealthHudOffline();
-          }
-          offlineLevelIndex++;
-          if (offlineLevelIndex >= OFFLINE_LEVELS.length) {
-            endGameOffline(true);
-            return;
-          }
-          wave = 1;
-          spawnOfflineWave(1);
-        } else {
-          spawnOfflineWave(wave);
-        }
+        offlineWaveClearPending = true;
+        openOfflinePerkChoice();
       }
     }
   }
@@ -2200,6 +2325,7 @@
       gameOverEl.classList.add("hidden");
       resetOffline();
       state = "play";
+      if (perkOverlay) perkOverlay.classList.add("hidden");
     } else if (mode === "online" && socket) {
       gameOverEl.classList.add("hidden");
       onlineMatchEndShown = false;
@@ -2225,6 +2351,7 @@
     offlineLevelPanel.classList.add("hidden");
     hud.classList.add("hidden");
     lobbyHint.classList.add("hidden");
+    if (perkOverlay) perkOverlay.classList.add("hidden");
     if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
     if (hudOnlineBadges) {
       hudOnlineBadges.classList.add("hidden");
