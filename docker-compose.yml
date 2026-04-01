@@ -4,7 +4,7 @@ services:
     container_name: qdr
     restart: unless-stopped
     ports:
-      - "80:3333"
+      - "3333:3333"
     environment:
       - NODE_ENV=production
       - PORT=3333
