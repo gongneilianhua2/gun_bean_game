@@ -50,9 +50,12 @@ body {
 #hud {
   pointer-events: none;
   display: flex;
+  flex-wrap: wrap;
   gap: 24px;
   font-size: 18px;
   font-weight: 600;
+  align-items: center;
+  justify-content: center;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
 }
 
@@ -213,6 +216,57 @@ button.wide-btn {
 #lobby-hint {
   font-size: 14px;
   opacity: 0.9;
+}
+
+.hud-online-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hud-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.hud-online-badges {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.hud-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.hud-badge.warn {
+  color: #fff1bf;
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.hud-badge.info {
+  color: #d9f2ff;
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.hud-badge.buff {
+  color: #ffe8c2;
+  background: rgba(249, 115, 22, 0.22);
+  border-color: rgba(249, 115, 22, 0.5);
 }
 
 #btn-ready {

@@ -6,6 +6,10 @@
   const hudScore = document.getElementById("score");
   const hudHealth = document.getElementById("health");
   const lobbyHint = document.getElementById("lobby-hint");
+  const hudOnlineMeta = document.getElementById("hud-online-meta");
+  const hudOnlineBadges = document.getElementById("hud-online-badges");
+  const hudRoom = document.getElementById("hud-room");
+  const hudPlayers = document.getElementById("hud-players");
   const btnReady = document.getElementById("btn-ready");
   const titleScreen = document.getElementById("title-screen");
   const onlinePanel = document.getElementById("online-panel");
@@ -504,6 +508,9 @@
     if (!netState || !socket) return;
     const me = netState.players.find((p) => p.id === socket.id);
     const readyCount = netState.players.filter((p) => p.ready).length;
+    if (hudOnlineMeta) hudOnlineMeta.classList.remove("hidden");
+    if (hudRoom) hudRoom.textContent = "房间 " + (netState.roomId || "");
+    if (hudPlayers) hudPlayers.textContent = "在线 " + netState.players.length + " 人";
     if (me) {
       const lv = (netState.levelIndex || 0) + 1;
       const lvN = netState.levelCount || 1;
@@ -524,18 +531,40 @@
     } else {
       hudScore.textContent = "连接中…";
     }
-    let hint =
-      "房间 " + (netState.roomId || "") + " · 在线 " + netState.players.length + " 人";
-    const b = netState.boat;
-    if (b) hint += " · 颠簸 " + Math.round((b.tilt || 0) * 100) + "%";
-    if (!netState.started) hint += " · 全员准备后开局";
-    if (netState.waveEvent === "fog") hint += " · 事件：浓雾";
-    if (netState.waveEvent === "storm") hint += " · 事件：风暴";
-    if (netState.teamBuffs && netState.teamBuffs.shotgunMs > 0) {
-      hint += " · 散弹 " + (netState.teamBuffs.shotgunMs / 1000).toFixed(1) + "s";
+    lobbyHint.classList.add("hidden");
+    if (hudOnlineBadges) {
+      const badges = [];
+      const b = netState.boat;
+      if (b) {
+        badges.push({
+          kind: "warn",
+          text: "颠簸 " + Math.round((b.tilt || 0) * 100) + "%",
+        });
+      }
+      if (!netState.started) {
+        badges.push({
+          kind: "info",
+          text: "准备 " + readyCount + "/" + netState.players.length,
+        });
+      }
+      if (netState.waveEvent === "fog") badges.push({ kind: "info", text: "事件：浓雾" });
+      if (netState.waveEvent === "storm") badges.push({ kind: "warn", text: "事件：风暴" });
+      if (netState.teamBuffs && netState.teamBuffs.shotgunMs > 0) {
+        badges.push({
+          kind: "buff",
+          text: "散弹 " + (netState.teamBuffs.shotgunMs / 1000).toFixed(1) + "s",
+        });
+      }
+      if (badges.length > 0) {
+        hudOnlineBadges.innerHTML = badges
+          .map((it) => '<span class="hud-badge ' + it.kind + '">' + it.text + "</span>")
+          .join("");
+        hudOnlineBadges.classList.remove("hidden");
+      } else {
+        hudOnlineBadges.innerHTML = "";
+        hudOnlineBadges.classList.add("hidden");
+      }
     }
-    lobbyHint.textContent = hint;
-    lobbyHint.classList.remove("hidden");
     if (btnReady) {
       const show = mode === "online" && !netState.started && !netState.matchOver;
       btnReady.classList.toggle("hidden", !show);
@@ -558,6 +587,11 @@
     offlineLevelPanel.classList.add("hidden");
     hud.classList.remove("hidden");
     lobbyHint.classList.add("hidden");
+    if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
+    if (hudOnlineBadges) {
+      hudOnlineBadges.classList.add("hidden");
+      hudOnlineBadges.innerHTML = "";
+    }
     const rect = canvas.getBoundingClientRect();
     mouse.x = rect.left + rect.width * 0.5;
     mouse.y = rect.top + rect.height * 0.5;
@@ -643,6 +677,7 @@
     mode = "online";
     prevMyShotFx = 0;
     particles.length = 0;
+    if (hudOnlineMeta) hudOnlineMeta.classList.remove("hidden");
     connectOnline();
   }
 
@@ -2190,6 +2225,11 @@
     offlineLevelPanel.classList.add("hidden");
     hud.classList.add("hidden");
     lobbyHint.classList.add("hidden");
+    if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
+    if (hudOnlineBadges) {
+      hudOnlineBadges.classList.add("hidden");
+      hudOnlineBadges.innerHTML = "";
+    }
     mode = "menu";
     state = "menu";
     prevMyShotFx = 0;
