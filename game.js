@@ -35,6 +35,11 @@
   const perkOverlay = document.getElementById("perk-overlay");
   const perkSubtitle = document.getElementById("perk-subtitle");
   const perkOptions = document.getElementById("perk-options");
+  const btnCopyReport = document.getElementById("btn-copy-report");
+  const copyReportHint = document.getElementById("copy-report-hint");
+  const progressSummaryEl = document.getElementById("progress-summary");
+  const dailyChallengeSummaryEl = document.getElementById("daily-challenge-summary");
+  const achievementMiniEl = document.getElementById("achievement-mini");
 
   /** 逻辑场地尺寸（与 server.js 一致）；物理分辨率由画布 backing store × letterbox 拉伸 */
   const W = 960;
@@ -316,6 +321,269 @@
     },
   ];
 
+  const PROGRESS_KEY = "qdr_progress_v1";
+  const ACHIEVEMENTS_KEY = "qdr_achievements_v1";
+
+  const ACHIEVEMENT_DEFS = {
+    first_clear: { title: "首闯全关", desc: "从第 1 关开局并通关全部关卡" },
+    flawless_level: { title: "无伤过一关", desc: "完整打完某一关时本关零受击" },
+    high_scorer: { title: "高分猎手", desc: "单局得分达到 2000" },
+  };
+
+  let runtimeNewAchievements = [];
+  let lastBattleReportPlain = "";
+  let offlineDailyChallenge = null;
+
+  function pad2(n) {
+    return (n < 10 ? "0" : "") + n;
+  }
+
+  function dateKeyLocal() {
+    const d = new Date();
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+
+  function strSeed(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
+  function mulberry32(a) {
+    return function () {
+      let t = (a += 0x6d2b79f5);
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function getDailyChallengeConfig() {
+    const dateKey = dateKeyLocal();
+    const rnd = mulberry32(strSeed("qdr|daily|" + dateKey));
+    const roll = rnd();
+    if (roll < 0.28) {
+      return {
+        dateKey,
+        title: "湍流日",
+        desc: "敌弹更密（射击间隔约 −18%），海面伴有视觉风浪。",
+        enemyCdMul: 0.82,
+        pickupMul: 1,
+        stormVisual: true,
+        fogVisual: false,
+      };
+    }
+    if (roll < 0.52) {
+      return {
+        dateKey,
+        title: "丰收潮汐",
+        desc: "击败敌人后强化掉落概率约 +35%。",
+        enemyCdMul: 1,
+        pickupMul: 1.35,
+        stormVisual: false,
+        fogVisual: false,
+      };
+    }
+    if (roll < 0.76) {
+      return {
+        dateKey,
+        title: "镜面晨海",
+        desc: "敌弹略慢（射击间隔约 +12%）。",
+        enemyCdMul: 1.12,
+        pickupMul: 1,
+        stormVisual: false,
+        fogVisual: false,
+      };
+    }
+    return {
+      dateKey,
+      title: "浓雾巡航",
+      desc: "视野略受压；掉落概率小幅提升（约 +12%）。",
+      enemyCdMul: 1,
+      pickupMul: 1.12,
+      stormVisual: false,
+      fogVisual: true,
+    };
+  }
+
+  function loadProgress() {
+    const d = { highScore: 0, maxLevelReached: 1, fullClears: 0, totalKills: 0, gamesPlayed: 0 };
+    try {
+      const raw = localStorage.getItem(PROGRESS_KEY);
+      if (!raw) return d;
+      const o = JSON.parse(raw);
+      if (typeof o !== "object" || !o) return d;
+      if (o.highScore != null) d.highScore = Math.max(0, o.highScore | 0);
+      if (o.maxLevelReached != null) d.maxLevelReached = Math.max(1, o.maxLevelReached | 0);
+      if (o.fullClears != null) d.fullClears = Math.max(0, o.fullClears | 0);
+      if (o.totalKills != null) d.totalKills = Math.max(0, o.totalKills | 0);
+      if (o.gamesPlayed != null) d.gamesPlayed = Math.max(0, o.gamesPlayed | 0);
+    } catch (_e) {}
+    return d;
+  }
+
+  function saveProgress(p) {
+    try {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(p));
+    } catch (_e) {}
+  }
+
+  function loadAchievements() {
+    try {
+      const raw = localStorage.getItem(ACHIEVEMENTS_KEY);
+      if (!raw) return {};
+      const o = JSON.parse(raw);
+      return typeof o === "object" && o ? o : {};
+    } catch (_e) {
+      return {};
+    }
+  }
+
+  function saveAchievements(o) {
+    try {
+      localStorage.setItem(ACHIEVEMENTS_KEY, JSON.stringify(o));
+    } catch (_e) {}
+  }
+
+  function unlockAchievement(id) {
+    if (!ACHIEVEMENT_DEFS[id]) return false;
+    const o = loadAchievements();
+    if (o[id]) return false;
+    o[id] = Date.now();
+    saveAchievements(o);
+    runtimeNewAchievements.push(ACHIEVEMENT_DEFS[id].title);
+    return true;
+  }
+
+  function recordOfflineGameEnd(won, finalScore, stats, startLevelIndex) {
+    const prog = loadProgress();
+    prog.gamesPlayed = (prog.gamesPlayed || 0) + 1;
+    prog.totalKills = (prog.totalKills || 0) + (stats && stats.kills ? stats.kills | 0 : 0);
+    if (finalScore > (prog.highScore || 0)) prog.highScore = finalScore | 0;
+    const reached = stats && stats.maxLevelReached != null ? stats.maxLevelReached | 0 : 1;
+    if (reached > (prog.maxLevelReached || 0)) prog.maxLevelReached = reached;
+    if (won && startLevelIndex === 0) prog.fullClears = (prog.fullClears || 0) + 1;
+    saveProgress(prog);
+  }
+
+  function refreshTitleMeta() {
+    if (progressSummaryEl) {
+      const p = loadProgress();
+      const ach = loadAchievements();
+      const achN = Object.keys(ach).length;
+      const achTotal = Object.keys(ACHIEVEMENT_DEFS).length;
+      progressSummaryEl.textContent =
+        "本地进度：最高到过第 " +
+        (p.maxLevelReached || 1) +
+        " 关 · 历史最高分 " +
+        (p.highScore || 0) +
+        " · 全胜通关 " +
+        (p.fullClears || 0) +
+        " 次 · 累计击杀 " +
+        (p.totalKills || 0) +
+        " · 已解锁成就 " +
+        achN +
+        "/" +
+        achTotal;
+    }
+    const dc = getDailyChallengeConfig();
+    if (dailyChallengeSummaryEl) {
+      dailyChallengeSummaryEl.textContent = "今日挑战（单机）：" + dc.title + " — " + dc.desc;
+    }
+    if (achievementMiniEl) {
+      const ach = loadAchievements();
+      const titles = Object.keys(ach)
+        .map((k) => (ACHIEVEMENT_DEFS[k] ? ACHIEVEMENT_DEFS[k].title : null))
+        .filter(Boolean);
+      achievementMiniEl.textContent = titles.length
+        ? "已解锁：" + titles.join(" · ")
+        : "成就：尚未解锁，完成单机关卡试试吧。";
+    }
+  }
+
+  function buildOfflineShareCardPlain(won, newAchTitles) {
+    const d = offlineDailyChallenge || getDailyChallengeConfig();
+    const nLv = OFFLINE_LEVELS.length;
+    const head = won
+      ? "得分 " +
+        score +
+        " — " +
+        (offlineStartLevelIndex > 0
+          ? "从第 " + (offlineStartLevelIndex + 1) + " 关起连胜至通关！"
+          : "完成全部 " + nLv + " 关！")
+      : "得分 " + score + " — 第 " + (offlineLevelIndex + 1) + " 关 · 第 " + wave + " 波";
+    const body = buildOfflineRunReport(won);
+    const lines = [
+      "【枪豆人 · 单机战报】",
+      "日期：" + d.dateKey,
+      "今日挑战：" + d.title + "（" + d.desc + "）",
+      "",
+      head,
+      "",
+      body ? body.replace(/^战报：/, "数据：") : "",
+    ];
+    if (newAchTitles && newAchTitles.length) {
+      lines.push("", "本局新成就：" + newAchTitles.join("、"));
+    }
+    lines.push("", "—— 复制自《枪豆人》");
+    return lines
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function buildOnlineShareCardPlain(won) {
+    const lines = ["【枪豆人 · 联机战报】", "日期：" + dateKeyLocal(), ""];
+    lines.push("说明：联机不使用每日挑战修正。");
+    if (netState) {
+      const rid = (netState.roomId || "").trim() || "public";
+      lines.push("房间：" + rid);
+      const me = socket && netState.players ? netState.players.find((p) => p.id === socket.id) : null;
+      if (me) lines.push("我的击杀：" + (me.kills | 0));
+    }
+    if (netState && netState.winnerId === "team") {
+      lines.push("结果：合作通关");
+    } else {
+      lines.push(won ? "结果：胜利" : "结果：本局结束");
+    }
+    lines.push("", "—— 复制自《枪豆人》");
+    return lines.join("\n");
+  }
+
+  function hideCopyReportHint() {
+    if (copyReportHint) {
+      copyReportHint.classList.add("hidden");
+      copyReportHint.textContent = "";
+    }
+  }
+
+  function copyBattleReportToClipboard() {
+    const text = (lastBattleReportPlain || "").trim();
+    if (!copyReportHint) return;
+    if (!text) {
+      copyReportHint.textContent = "暂无可复制的战报内容。";
+      copyReportHint.classList.remove("hidden");
+      return;
+    }
+    const doneOk = function () {
+      copyReportHint.textContent = "已复制到剪贴板。";
+      copyReportHint.classList.remove("hidden");
+    };
+    const doneFail = function () {
+      copyReportHint.textContent =
+        "自动复制不可用。请在上方结算文字中手动拖选复制，或使用系统截图分享。";
+      copyReportHint.classList.remove("hidden");
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(doneOk).catch(doneFail);
+      return;
+    }
+    doneFail();
+  }
+
   const keys = {};
   let mouse = { x: 0, y: 0, down: false };
   let screenShake = 0;
@@ -487,6 +755,11 @@
     const lvl = OFFLINE_LEVELS[offlineLevelIndex];
     if (!lvl || waveNum < 1 || waveNum > lvl.waves.length) return;
     const wc = mergeWaveCfg(lvl.waves[waveNum - 1]);
+    const dc = offlineDailyChallenge;
+    if (dc && dc.enemyCdMul && dc.enemyCdMul !== 1) {
+      wc.shootCdMin *= dc.enemyCdMul;
+      wc.shootCdMax *= dc.enemyCdMul;
+    }
     for (let i = 0; i < wc.count; i++) enemies.push(spawnEnemy(true, wc));
   }
 
@@ -510,6 +783,7 @@
       kills: 0,
       pickups: 0,
       damageTaken: 0,
+      damageThisLevel: 0,
       shieldBlocks: 0,
       startLevel: 1,
       maxLevelReached: 1,
@@ -668,6 +942,12 @@
     }
     wave++;
     if (wave > lvl.waves.length) {
+      if (offlineRunStats) {
+        if (offlineRunStats.damageThisLevel === 0) {
+          unlockAchievement("flawless_level");
+        }
+        offlineRunStats.damageThisLevel = 0;
+      }
       const heal = lvl.healOnLevelClear != null ? lvl.healOnLevelClear : 0;
       if (heal > 0) {
         player.hp = Math.min(player.maxHp || 3, player.hp + heal);
@@ -774,6 +1054,9 @@
         Math.min(OFFLINE_LEVELS.length - 1, levelIndex | 0)
       );
     }
+    runtimeNewAchievements = [];
+    offlineDailyChallenge = getDailyChallengeConfig();
+    hideCopyReportHint();
     gameOverEl.classList.add("hidden");
     titleScreen.classList.add("hidden");
     onlinePanel.classList.add("hidden");
@@ -854,6 +1137,7 @@
     state = "over";
     goTitle.textContent = won ? "通关！" : "本局结束";
     const short = (id) => (id ? id.slice(0, 8) : "?");
+    hideCopyReportHint();
     if (netState && netState.winnerId === "team") {
       goMsg.textContent = "合作闯关完成，全部关卡已清空！";
     } else {
@@ -861,6 +1145,7 @@
         ? "率先达到 " + (netState && netState.winKills ? netState.winKills : 10) + " 杀！"
         : "胜者：玩家 " + short(netState && netState.winnerId);
     }
+    lastBattleReportPlain = buildOnlineShareCardPlain(won);
     gameOverEl.classList.remove("hidden");
     if (btnReady) btnReady.classList.add("hidden");
   }
@@ -883,6 +1168,15 @@
   function endGameOffline(won) {
     state = "over";
     goTitle.textContent = won ? "通关！" : "游戏结束";
+    if (score >= 2000) {
+      unlockAchievement("high_scorer");
+    }
+    if (won && offlineStartLevelIndex === 0) {
+      unlockAchievement("first_clear");
+    }
+    recordOfflineGameEnd(won, score, offlineRunStats, offlineStartLevelIndex);
+    const snapAch = runtimeNewAchievements.slice();
+    runtimeNewAchievements.length = 0;
     const nLv = OFFLINE_LEVELS.length;
     const topLine = won
       ? "得分 " + score + " — " +
@@ -890,7 +1184,9 @@
           ? "从第 " + (offlineStartLevelIndex + 1) + " 关起连胜至通关！"
           : "完成全部 " + nLv + " 关！")
       : "得分 " + score + " — 第 " + (offlineLevelIndex + 1) + " 关 · 第 " + wave + " 波";
-    goMsg.textContent = topLine + "\n\n" + buildOfflineRunReport(won);
+    const achLine = snapAch.length ? "\n\n新成就：" + snapAch.join("、") : "";
+    goMsg.textContent = topLine + "\n\n" + buildOfflineRunReport(won) + achLine;
+    lastBattleReportPlain = buildOfflineShareCardPlain(won, snapAch);
     gameOverEl.classList.remove("hidden");
   }
 
@@ -1926,7 +2222,10 @@
         const d = vecLen(b.x - player.x, b.y - player.y);
         const shieldOn = offlineBuffs && offlineBuffs.shieldT > 0;
         if (d < player.r + 4 && player.invuln <= 0 && !shieldOn) {
-          if (offlineRunStats) offlineRunStats.damageTaken += 1;
+          if (offlineRunStats) {
+            offlineRunStats.damageTaken += 1;
+            offlineRunStats.damageThisLevel += 1;
+          }
           player.hp--;
           player.invuln = 1;
           pushHitIndicator(Math.atan2(-(b.vy || 0.001), -(b.vx || 0.001)));
@@ -2014,7 +2313,12 @@
             if (offlineRunStats) offlineRunStats.hits += 1;
             addHitScatter(b.x, b.y, b.vx, b.vy, e.hp <= 0 ? "impactHeavy" : "victimEnemy");
             if (e.hp <= 0) {
-              if (Math.random() < PICKUP_DROP_BASE || e.r >= 26 || e.hp <= -4) {
+              const dropMul =
+                offlineDailyChallenge && offlineDailyChallenge.pickupMul
+                  ? offlineDailyChallenge.pickupMul
+                  : 1;
+              const dropP = Math.min(0.95, PICKUP_DROP_BASE * dropMul);
+              if (Math.random() < dropP || e.r >= 26 || e.hp <= -4) {
                 pickups.push({
                   type: randomPickupTypeOffline(),
                   x: e.x + rand(-14, 14),
@@ -2052,6 +2356,30 @@
     ctx.translate(Math.sin(t * 6.2) * sh * 0.18, Math.cos(t * 5.1) * sh * 0.16);
 
     drawArena(getOfflineArenaTheme());
+    const dcVis = offlineDailyChallenge;
+    if (dcVis && dcVis.fogVisual) {
+      const fx = W * 0.5;
+      const fy = H * 0.72;
+      const rg = ctx.createRadialGradient(fx, fy, 120, fx, fy, Math.max(W, H) * 0.7);
+      rg.addColorStop(0, "rgba(210,220,230,0)");
+      rg.addColorStop(0.7, "rgba(190,200,210,0.18)");
+      rg.addColorStop(1, "rgba(165,175,185,0.36)");
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, W, H);
+    } else if (dcVis && dcVis.stormVisual) {
+      const tStorm = performance.now() * 0.02;
+      ctx.fillStyle = "rgba(140,170,210,0.08)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = "rgba(230,245,255,0.22)";
+      ctx.lineWidth = 1.1;
+      for (let x = -80; x < W + 80; x += 46) {
+        const y = ((x * 1.7 + tStorm * 18) % (H + 80)) - 40;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 24, y - 32);
+        ctx.stroke();
+      }
+    }
     if (!OFFLINE_ENEMIES_DISABLED) {
       for (const e of enemies) {
         const ang = Math.atan2(player.y - e.y, player.x - e.x);
@@ -2187,6 +2515,9 @@
       if (offlineBuffs && offlineBuffs.rapidfireT > 0) {
         subtitle += " · 快射 " + offlineBuffs.rapidfireT.toFixed(1) + "s";
       }
+      if (offlineDailyChallenge && offlineDailyChallenge.title) {
+        subtitle += " · 今日：" + offlineDailyChallenge.title;
+      }
       ctx.fillStyle = "rgba(255,255,255,0.72)";
       ctx.font = "13px sans-serif";
       ctx.fillText(subtitle, 12, H - 12);
@@ -2261,6 +2592,30 @@
       drawOnlineCrew();
     }
     for (const e of netState.enemies || []) {
+      if (e.type === "jammer" && (e.jamPulseRem || 0) > 0 && (e.jamFieldR || 0) > 0) {
+        const jr = e.jamFieldR;
+        const pulse = Math.min(1, (e.jamPulseRem || 0) / 0.4);
+        ctx.fillStyle = "rgba(15, 118, 110, " + (0.07 + pulse * 0.1) + ")";
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, jr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(45, 212, 191, " + (0.28 + pulse * 0.2) + ")";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, jr, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(153, 246, 228, " + (0.32 + pulse * 0.15) + ")";
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, jr * 0.7, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(204, 251, 241, " + (0.12 + pulse * 0.08) + ")";
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, jr * 0.42, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    for (const e of netState.enemies || []) {
       const ec =
         e.type === "turret"
           ? "#ff9f43"
@@ -2268,13 +2623,22 @@
             ? "#ff5e7e"
             : e.type === "boss"
               ? "#c77dff"
-              : "#e94560";
+              : e.type === "jammer"
+                ? "#2dd4bf"
+                : "#e94560";
       const ang = Math.atan2(deck ? deck.y - e.y : H * 0.75 - e.y, deck ? deck.x - e.x : W * 0.5 - e.x);
       drawBoatBean(e.x, e.y, e.r || 20, ec, ang, {
         eyeOffset: 0,
         muzzleFlash: e.muzzleFlash || 0,
         gunRecoil: e.gunRecoil || 0,
       });
+      if (e.type === "boss" && (e.bossPhase || 1) >= 2) {
+        ctx.fillStyle = "rgba(255, 228, 200, 0.92)";
+        ctx.font = "bold 11px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("P" + (e.bossPhase || 1), e.x, e.y - (e.r || 20) - 9);
+        ctx.textAlign = "left";
+      }
     }
     for (const b of netState.bullets || []) {
       const vx = b.vx != null ? b.vx : 0;
@@ -2405,6 +2769,21 @@
     if (netState.matchOver) {
       ctx.fillStyle = "rgba(0,0,0,0.25)";
       ctx.fillRect(0, 0, W, H);
+    }
+    if (netState.bossPhaseBanner && netState.bossPhaseBanner.ttlMs > 0) {
+      const ba = Math.max(0, Math.min(1, netState.bossPhaseBanner.ttlMs / 1000));
+      ctx.save();
+      ctx.globalAlpha = 0.95 * ba;
+      ctx.fillStyle = "rgba(255, 237, 200, 0.98)";
+      ctx.font = "bold 17px sans-serif";
+      ctx.textAlign = "center";
+      ctx.shadowColor = "rgba(120, 40, 20, 0.55)";
+      ctx.shadowBlur = 6;
+      ctx.fillText(netState.bossPhaseBanner.text || "", W * 0.5, 84);
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "left";
+      ctx.restore();
     }
     if (netState.waveReport && netState.waveReport.ttlMs > 0) {
       const alpha = Math.max(0, Math.min(1, netState.waveReport.ttlMs / 800));

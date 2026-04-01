@@ -27,6 +27,8 @@ const RESPAWN_MS = 2800;
 const WIN_KILLS = 10;
 const BULLET_LIFE = 1.2;
 const TICK_MS = 1000 / 60;
+/** 低频 meta 同步间隔（tick 数），与 stateFast 搭配 */
+const STATE_META_EVERY = 5;
 const BOAT_CLAMP = 34;
 /** 颠簸：速度 + 后坐力累积，满则翻船 */
 const CAPSIZE_TILT_DECAY = 0.36;
@@ -38,7 +40,7 @@ const DISCONNECT_GRACE_MS = 10000;
 const FRIENDLY_FIRE = false;
 const ENEMY_R_MIN = 9;
 const ENEMY_R_MAX = 11;
-const ENEMY_TYPES = ["assault", "turret", "charger"];
+const ENEMY_TYPES = ["assault", "turret", "charger", "jammer"];
 const PICKUP_LIFE_MS = 12000;
 const PICKUP_AUTO_PICK_R = 42;
 const PICKUP_DROP_BASE = 0.22;
@@ -205,11 +207,98 @@ function spawnEnemy(cfg, typeOverride) {
     base.speed *= 0.72;
     base.shootRange += 120;
     base.bulletSpeed += 20;
+    base.bossMaxHp = base.hp;
+    base.bossPhase = 1;
+    base.bossSummonCd = rand(2.8, 4.6);
+  } else if (base.type === "jammer") {
+    base.speed *= 0.56;
+    base.shootRange *= 0.74;
+    base.shootCdMin += 0.38;
+    base.shootCdMax += 0.52;
+    base.bulletSpeed *= 0.82;
+    base.r += 0.8;
+    base.jamInterval = 4.1 + rand(0, 0.75);
+    base.jamPulseDuration = 2.55 + rand(0, 0.45);
+    base.jamFieldR = 90 + rand(0, 14);
+    base.jamCd = rand(0.35, 1.4);
+    base.jamPulseRem = 0;
   } else {
     base.speed *= 1.12;
     base.bulletSpeed += 18;
   }
   return base;
+}
+
+function spawnBossMinion(room, boss) {
+  const summons = room.enemies.filter((x) => x.isBossSummon).length;
+  if (summons >= 4) return;
+  const m = spawnEnemy(
+    {
+      ...DEFAULT_WAVE_CFG,
+      hp: 1,
+      radiusMin: 8,
+      radiusMax: 10,
+      speedMin: 62,
+      speedMax: 100,
+      shootRange: 385,
+      bulletSpeed: 328,
+      shootCdMin: 0.92,
+      shootCdMax: 1.62,
+    },
+    "assault"
+  );
+  const a = rand(0, Math.PI * 2);
+  const dist = 92 + rand(0, 62);
+  m.x = Math.max(34, Math.min(W - 34, boss.x + Math.cos(a) * dist));
+  m.y = Math.max(34, Math.min(H - 34, boss.y + Math.sin(a) * dist));
+  m.isBossSummon = true;
+  room.enemies.push(m);
+}
+
+function buildWaveComposition(levelIndex, waveNum, playerCount) {
+  const lvl = OFFLINE_LEVELS[levelIndex];
+  if (!lvl || waveNum < 1 || waveNum > lvl.waves.length) return [];
+  const w = lvl.waves[waveNum - 1];
+  const cfg = mergeWaveCfg(w);
+  const n = Math.max(1, playerCount);
+  const total = Math.max(1, Math.round(cfg.count * (1 + (n - 1) * 0.4)));
+  const isBossWave = waveNum === lvl.waves.length;
+  const bossOk = isBossWave && levelIndex >= 2;
+
+  if (bossOk) {
+    const out = ["boss"];
+    const extras = Math.max(0, total - 1);
+    const cap = Math.min(extras, 2 + Math.min(2, n - 1));
+    for (let i = 0; i < cap; i++) {
+      out.push(i % 2 === 0 ? "assault" : "charger");
+    }
+    return out;
+  }
+
+  let mechSlots = Math.floor(total * 0.2);
+  if (levelIndex >= 2 && total >= 4) mechSlots += 1;
+  if (levelIndex >= 4 && total >= 6) mechSlots += 1;
+  if (levelIndex === 0 && waveNum <= 2) mechSlots = Math.min(mechSlots, 1);
+  mechSlots = Math.max(0, Math.min(mechSlots, 3, Math.max(0, total - 2)));
+  const mainCount = total - mechSlots;
+  const out = [];
+  for (let i = 0; i < mainCount; i++) {
+    out.push(i % 2 === 0 ? "assault" : "charger");
+  }
+  for (let i = 0; i < mechSlots; i++) {
+    if (levelIndex === 0 && waveNum <= 2) {
+      out.push("turret");
+    } else {
+      out.push(i % 2 === 0 ? "turret" : "jammer");
+    }
+  }
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.abs((levelIndex * 47 + waveNum * 19 + i * 29) % (i + 1));
+    const t = out[i];
+    out[i] = out[j];
+    out[j] = t;
+  }
+  return out;
 }
 
 function pickWaveEvent(levelIndex, waveNum) {
@@ -227,12 +316,9 @@ function spawnWave(room, levelIndex, waveNum) {
   const cfg = mergeWaveCfg(w);
   room.waveEvent = pickWaveEvent(levelIndex, waveNum);
   const n = Math.max(1, room.players.size);
-  const scaledCount = Math.max(1, Math.round(cfg.count * (1 + (n - 1) * 0.4)));
-  const isBossWave = waveNum === lvl.waves.length;
-  for (let i = 0; i < scaledCount; i++) {
-    let t = ENEMY_TYPES[(i + waveNum + levelIndex) % ENEMY_TYPES.length];
-    if (isBossWave && i === 0 && levelIndex >= 2) t = "boss";
-    room.enemies.push(spawnEnemy(cfg, t));
+  const composition = buildWaveComposition(levelIndex, waveNum, n);
+  for (let i = 0; i < composition.length; i++) {
+    room.enemies.push(spawnEnemy(cfg, composition[i]));
   }
 }
 
@@ -322,6 +408,10 @@ function getOrCreateRoom(roomId) {
       },
       capsizeFx: 0,
       waveReport: null,
+      bossPhaseBanner: null,
+      netSeq: 0,
+      metaSeq: 0,
+      metaTickAcc: 0,
     });
   }
   return rooms.get(roomId);
@@ -394,6 +484,7 @@ function resetMatch(room) {
   room.boat.tilt = 0;
   room.capsizeFx = 0;
   room.waveReport = null;
+  room.bossPhaseBanner = null;
   room.pickups = [];
   room.teamBuffs = { shotgunUntil: 0, shieldUntil: 0, rapidfireUntil: 0 };
   room.levelIndex = 0;
@@ -687,8 +778,17 @@ function simRoom(room, dt, io) {
     B.pvy -= EDGE_REPEL_FORCE * k * dt;
   }
 
-  B.x += B.pvx * dt;
-  B.y += B.pvy * dt;
+  let jamVelScale = 1;
+  for (const e of room.enemies) {
+    if (e.type !== "jammer" || !(e.jamPulseRem > 0)) continue;
+    const jr = e.jamFieldR || 90;
+    if (vecLen(B.x - e.x, B.y - e.y) < jr) {
+      jamVelScale = 0.56;
+      break;
+    }
+  }
+  B.x += B.pvx * dt * jamVelScale;
+  B.y += B.pvy * dt * jamVelScale;
   if (B.x - loX < WALL_AUTO_POP_ZONE) {
     const k = (WALL_AUTO_POP_ZONE - (B.x - loX)) / WALL_AUTO_POP_ZONE;
     B.pvx += WALL_AUTO_POP_PUSH * k * dt;
@@ -754,6 +854,16 @@ function simRoom(room, dt, io) {
   for (const e of room.enemies) {
     e.muzzleFlash = Math.max(0, e.muzzleFlash - dt * 9);
     e.gunRecoil = Math.max(0, e.gunRecoil - dt * 3.2);
+    if (e.type === "jammer") {
+      if (e.jamPulseRem > 0) e.jamPulseRem -= dt;
+      else {
+        e.jamCd -= dt;
+        if (e.jamCd <= 0) {
+          e.jamPulseRem = e.jamPulseDuration || 2.65;
+          e.jamCd = e.jamInterval || 4.35;
+        }
+      }
+    }
     let tx = B.x;
     let ty = B.y;
     let best = Infinity;
@@ -789,18 +899,52 @@ function simRoom(room, dt, io) {
       e.x += dir.x * e.speed * dt;
       e.y += dir.y * e.speed * dt;
     }
+    if (e.type === "boss") {
+      if (!e.bossMaxHp) e.bossMaxHp = Math.max(e.hp, 8);
+      let ph = 1;
+      if (e.hp <= e.bossMaxHp * 0.34) ph = 3;
+      else if (e.hp <= e.bossMaxHp * 0.66) ph = 2;
+      const prev = e.bossPhase || 1;
+      e.bossPhase = ph;
+      if (ph > prev) {
+        room.bossPhaseBanner = {
+          text: "首领 进入 阶段 " + (ph === 2 ? "II" : "III"),
+          until: Date.now() + 2600,
+        };
+      }
+      e.bossSummonCd -= dt;
+      if (ph >= 2 && e.bossSummonCd <= 0 && room.enemies.length < 24) {
+        e.bossSummonCd = ph >= 3 ? 5.1 : 7.6;
+        spawnBossMinion(room, e);
+      }
+    }
     e.shootCd -= dt;
     const eRange = e.shootRange != null ? e.shootRange : 420;
     const eBulletSpd = e.bulletSpeed != null ? e.bulletSpeed : 340;
     const eCd0 = e.shootCdMin != null ? e.shootCdMin : 0.9;
     const eCd1 = e.shootCdMax != null ? e.shootCdMax : 1.8;
-    if (e.shootCd <= 0 && best < eRange && !(e.type === "charger" && e.chargeT > 0)) {
+    let shots = 1;
+    let bossCdMul = 1;
+    let bossRangeBonus = 0;
+    if (e.type === "boss") {
+      const ph = e.bossPhase || 1;
+      if (ph <= 1) {
+        shots = 3;
+      } else if (ph === 2) {
+        shots = 5;
+        bossCdMul = 0.84;
+      } else {
+        shots = 6;
+        bossCdMul = 0.67;
+        bossRangeBonus = 48;
+      }
+    }
+    if (e.shootCd <= 0 && best < eRange + bossRangeBonus && !(e.type === "charger" && e.chargeT > 0)) {
       const bd = normalize(tx - e.x, ty - e.y);
       const md = e.r + 18;
-      const shots = e.type === "boss" ? 3 : 1;
       const enemyBulletMul = 0.78;
       for (let si = 0; si < shots; si++) {
-        const spread = shots === 1 ? 0 : (si - 1) * 0.2;
+        const spread = shots === 1 ? 0 : (si - (shots - 1) * 0.5) * 0.19;
         const a = Math.atan2(bd.y, bd.x) + spread;
         room.bullets.push({
           x: e.x + Math.cos(a) * md,
@@ -812,7 +956,7 @@ function simRoom(room, dt, io) {
           life: 1.5,
         });
       }
-      e.shootCd = rand(eCd0, eCd1);
+      e.shootCd = rand(eCd0 * bossCdMul, eCd1 * bossCdMul);
       e.muzzleFlash = 1.12;
       e.gunRecoil = 0.4;
     }
@@ -993,16 +1137,28 @@ function serializeRoom(room) {
     y: pk.y,
     ttlMs: Math.max(0, pk.until - Date.now()),
   }));
-  const enemies = room.enemies.map((e) => ({
-    x: e.x,
-    y: e.y,
-    r: e.r,
-    hp: e.hp,
-    type: e.type || "assault",
-    muzzleFlash: e.muzzleFlash || 0,
-    gunRecoil: e.gunRecoil || 0,
-  }));
+  const enemies = room.enemies.map((e) => {
+    const o = {
+      x: e.x,
+      y: e.y,
+      r: e.r,
+      hp: e.hp,
+      type: e.type || "assault",
+      muzzleFlash: e.muzzleFlash || 0,
+      gunRecoil: e.gunRecoil || 0,
+    };
+    if (e.type === "jammer") {
+      o.jamPulseRem = e.jamPulseRem > 0 ? e.jamPulseRem : 0;
+      o.jamFieldR = e.jamFieldR || 0;
+    }
+    if (e.type === "boss") {
+      o.bossPhase = e.bossPhase || 1;
+      o.bossMaxHp = e.bossMaxHp || e.hp;
+    }
+    return o;
+  });
   const wr = room.waveReport;
+  const bb = room.bossPhaseBanner;
   const now = Date.now();
   return {
     roomId: room.id,
@@ -1045,10 +1201,157 @@ function serializeRoom(room) {
             ttlMs: wr.until - now,
           }
         : null,
+    bossPhaseBanner:
+      bb && bb.until > now
+        ? {
+            text: bb.text,
+            ttlMs: bb.until - now,
+          }
+        : null,
     matchOver: room.matchOver,
     winnerId: room.winnerId,
     winKills: WIN_KILLS,
   };
+}
+
+function serializeRoomFast(room) {
+  room.netSeq = (room.netSeq || 0) + 1;
+  const players = [];
+  const B = room.boat || { x: W * 0.5, y: H * 0.72 };
+  for (const p of room.players.values()) {
+    const wp = worldPos(room, p);
+    players.push({
+      id: p.id,
+      x: wp.x,
+      y: wp.y,
+      angle: p.angle,
+      hp: p.hp,
+      invuln: p.invuln,
+      respawnMs: p.respawnAt > Date.now() ? p.respawnAt - Date.now() : 0,
+      shotFx: p.shotFx || 0,
+    });
+  }
+  players.sort((a, b) => a.id.localeCompare(b.id));
+  const bullets = room.bullets.map((b) => ({
+    x: b.x,
+    y: b.y,
+    vx: b.vx,
+    vy: b.vy,
+    from: b.from || "player",
+    shotgun: !!b.shotgun,
+    ownerId: b.ownerId,
+  }));
+  const pickups = room.pickups.map((pk) => ({
+    id: pk.id,
+    type: pk.type,
+    x: pk.x,
+    y: pk.y,
+    ttlMs: Math.max(0, pk.until - Date.now()),
+  }));
+  const enemies = room.enemies.map((e) => {
+    const o = {
+      x: e.x,
+      y: e.y,
+      r: e.r,
+      hp: e.hp,
+      type: e.type || "assault",
+      muzzleFlash: e.muzzleFlash || 0,
+      gunRecoil: e.gunRecoil || 0,
+    };
+    if (e.type === "jammer") {
+      o.jamPulseRem = e.jamPulseRem > 0 ? e.jamPulseRem : 0;
+      o.jamFieldR = e.jamFieldR || 0;
+    }
+    if (e.type === "boss") {
+      o.bossPhase = e.bossPhase || 1;
+      o.bossMaxHp = e.bossMaxHp || e.hp;
+    }
+    return o;
+  });
+  return {
+    seq: room.netSeq,
+    boat: {
+      x: B.x,
+      y: B.y,
+      pvx: B.pvx,
+      pvy: B.pvy,
+      tilt: B.tilt != null ? B.tilt : 0,
+      capsizeFx: room.capsizeFx != null ? room.capsizeFx : 0,
+    },
+    started: !!room.started,
+    matchOver: !!room.matchOver,
+    winnerId: room.winnerId,
+    players,
+    enemies,
+    pickups,
+    bullets,
+  };
+}
+
+function serializeRoomMeta(room) {
+  room.metaSeq = (room.metaSeq || 0) + 1;
+  const now = Date.now();
+  const wr = room.waveReport;
+  const bb = room.bossPhaseBanner;
+  const players = [];
+  for (const p of room.players.values()) {
+    players.push({
+      id: p.id,
+      kills: p.kills,
+      deaths: p.deaths,
+      colorIndex: p.colorIndex,
+      slot: p.slot,
+      ready: !!p.ready,
+      connected: !!p.connected,
+    });
+  }
+  players.sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    metaSeq: room.metaSeq,
+    roomId: room.id,
+    w: W,
+    h: H,
+    colors: COLORS,
+    levelIndex: room.levelIndex || 0,
+    wave: room.wave || 1,
+    levelCount: OFFLINE_LEVELS.length,
+    waveTotal: OFFLINE_LEVELS[room.levelIndex || 0]
+      ? OFFLINE_LEVELS[room.levelIndex || 0].waves.length
+      : 0,
+    waveEvent: room.waveEvent || "none",
+    teamBuffs: {
+      shotgunMs: Math.max(0, (room.teamBuffs && room.teamBuffs.shotgunUntil ? room.teamBuffs.shotgunUntil : 0) - now),
+      shieldMs: Math.max(0, (room.teamBuffs && room.teamBuffs.shieldUntil ? room.teamBuffs.shieldUntil : 0) - now),
+      rapidfireMs: Math.max(
+        0,
+        (room.teamBuffs && room.teamBuffs.rapidfireUntil ? room.teamBuffs.rapidfireUntil : 0) - now
+      ),
+    },
+    waveReport:
+      wr && wr.until > now
+        ? {
+            text: wr.text,
+            rows: wr.rows,
+            ttlMs: wr.until - now,
+          }
+        : null,
+    bossPhaseBanner:
+      bb && bb.until > now
+        ? {
+            text: bb.text,
+            ttlMs: bb.until - now,
+          }
+        : null,
+    winKills: WIN_KILLS,
+    players,
+  };
+}
+
+function emitRoomLobbySync(io, room) {
+  if (!room) return;
+  io.to(room.id).emit("state", serializeRoom(room));
+  io.to(room.id).emit("stateFast", serializeRoomFast(room));
+  io.to(room.id).emit("stateMeta", serializeRoomMeta(room));
 }
 
 const app = express();
@@ -1075,7 +1378,7 @@ io.on("connection", (socket) => {
           meOld.disconnectedUntil = Date.now() + DISCONNECT_GRACE_MS;
         }
         const oldAfter = rooms.get(currentRoomId);
-        if (oldAfter) io.to(currentRoomId).emit("state", serializeRoom(oldAfter));
+        if (oldAfter) emitRoomLobbySync(io, oldAfter);
       }
     }
     socket.join(roomId);
@@ -1100,7 +1403,7 @@ io.on("connection", (socket) => {
       }
     }
     if (typeof cb === "function") cb({ ok: true, roomId });
-    io.to(roomId).emit("state", serializeRoom(room));
+    emitRoomLobbySync(io, room);
   });
 
   socket.on("input", (payload) => {
@@ -1129,7 +1432,7 @@ io.on("connection", (socket) => {
     if (canStartRoom(room)) {
       resetMatch(room);
     }
-    io.to(currentRoomId).emit("state", serializeRoom(room));
+    emitRoomLobbySync(io, room);
   });
 
   socket.on("restartMatch", () => {
@@ -1145,7 +1448,7 @@ io.on("connection", (socket) => {
     for (const q of room.players.values()) {
       q.ready = false;
     }
-    io.to(currentRoomId).emit("state", serializeRoom(room));
+    emitRoomLobbySync(io, room);
   });
 
   socket.on("disconnect", () => {
@@ -1160,7 +1463,7 @@ io.on("connection", (socket) => {
     p.disconnectedUntil = Date.now() + DISCONNECT_GRACE_MS;
     if (!room.started) p.ready = false;
     const after = rooms.get(roomId);
-    if (after) io.to(roomId).emit("state", serializeRoom(after));
+    if (after) emitRoomLobbySync(io, after);
   });
 });
 
@@ -1168,6 +1471,11 @@ setInterval(() => {
   const dt = TICK_MS / 1000;
   for (const room of rooms.values()) {
     simRoom(room, dt, io);
+    io.to(room.id).emit("stateFast", serializeRoomFast(room));
+    room.metaTickAcc = (room.metaTickAcc || 0) + 1;
+    if (room.metaTickAcc % STATE_META_EVERY === 0) {
+      io.to(room.id).emit("stateMeta", serializeRoomMeta(room));
+    }
     io.to(room.id).emit("state", serializeRoom(room));
   }
 }, TICK_MS);
