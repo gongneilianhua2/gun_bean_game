@@ -336,6 +336,7 @@
   let offlinePerks;
   let offlineWaveClearPending;
   let particles = [];
+  let hitIndicators = [];
   let score;
   let wave;
   let offlineLevelIndex;
@@ -823,6 +824,12 @@
         addHitScatter(d.x, d.y, d.vx, d.vy, "impactHeavy");
         addParticles(d.x, d.y, "#b8e8ff", 36);
         return;
+      }
+      if (netState && socket && netState.players) {
+        const me = netState.players.find((p) => p.id === socket.id);
+        if (me && vecLen(d.x - me.x, d.y - me.y) < 80) {
+          pushHitIndicator(Math.atan2(-(d.vy || 0.001), -(d.vx || 0.001)));
+        }
       }
       const pal = d.kill ? "impactHeavy" : "impact";
       addHitScatter(d.x, d.y, d.vx, d.vy, pal);
@@ -1527,6 +1534,51 @@
     }
   }
 
+  function pushHitIndicator(angle, ttl) {
+    hitIndicators.push({
+      angle,
+      ttl: ttl != null ? ttl : 0.75,
+      life: ttl != null ? ttl : 0.75,
+    });
+    if (hitIndicators.length > 8) hitIndicators.splice(0, hitIndicators.length - 8);
+  }
+
+  function updateHitIndicators(dt) {
+    for (let i = hitIndicators.length - 1; i >= 0; i--) {
+      const h = hitIndicators[i];
+      h.ttl -= dt;
+      if (h.ttl <= 0) hitIndicators.splice(i, 1);
+    }
+  }
+
+  function drawHitIndicatorsAt(cx, cy) {
+    for (const h of hitIndicators) {
+      const a = Math.max(0, Math.min(1, h.ttl / h.life));
+      const r = 40;
+      const x = cx + Math.cos(h.angle) * r;
+      const y = cy + Math.sin(h.angle) * r;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(h.angle);
+      ctx.globalAlpha = 0.2 + a * 0.8;
+      ctx.fillStyle = "rgba(255,86,86,0.95)";
+      ctx.beginPath();
+      ctx.moveTo(14, 0);
+      ctx.lineTo(-8, -7);
+      ctx.lineTo(-8, 7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,220,220,0.95)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(-4, 0);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.restore();
+    }
+  }
+
   function addHitScatter(x, y, bvx, bvy, palette) {
     const blues = ["#f0ffff", "#b8f5ee", "#6ee7de", "#4ecdc4", "#2a8a82"];
     const reds = ["#ffffff", "#ffd0d0", "#ff9a9a", "#ff6b6b", "#c92a2a"];
@@ -1837,6 +1889,7 @@
         if (d < player.r + 4 && player.invuln <= 0 && !shieldOn) {
           player.hp--;
           player.invuln = 1;
+          pushHitIndicator(Math.atan2(-(b.vy || 0.001), -(b.vx || 0.001)));
           addHitScatter(
             b.x,
             b.y,
@@ -2069,6 +2122,7 @@
       }
       ctx.globalAlpha = 1;
     }
+    drawHitIndicatorsAt(player.x, player.y);
     drawParticlesBatch();
     if (mode === "offline" && state === "play" && !OFFLINE_ENEMIES_DISABLED) {
       const lvl = OFFLINE_LEVELS[offlineLevelIndex];
@@ -2270,6 +2324,10 @@
       }
       ctx.globalAlpha = 1;
     }
+    if (socket && netState.players) {
+      const me = netState.players.find((p) => p.id === socket.id);
+      if (me) drawHitIndicatorsAt(me.x, me.y);
+    }
     drawParticlesBatch();
     if (netState.waveEvent === "fog") {
       const fx = deck ? deck.x : W * 0.5;
@@ -2358,6 +2416,7 @@
       sendOnlineInput();
     }
     updateParticles(dt);
+    updateHitIndicators(dt);
 
     if (mode === "offline" && state === "play") {
       renderOffline();
