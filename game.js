@@ -595,6 +595,15 @@
   let socket = null;
   let netState = null;
   let onlineMatchEndShown = false;
+  let netUseSplitSync = false;
+  let onlineInterpPrev = null;
+  let onlineInterpCurr = null;
+  let onlineInterpPrevT = 0;
+  let onlineInterpCurrT = 0;
+  let visualQualityTier = "high";
+  let visualFpsSmooth = 60;
+  let visualFpsSampleAcc = 0;
+  let visualFpsSampleN = 0;
 
   let player;
   let bullets;
@@ -623,6 +632,153 @@
 
   function rand(a, b) {
     return a + Math.random() * (b - a);
+  }
+
+  function mergeNetStateFast(base, f) {
+    if (!base || !f) return;
+    base.boat = f.boat;
+    base.started = !!f.started;
+    base.matchOver = !!f.matchOver;
+    base.winnerId = f.winnerId;
+    base.enemies = f.enemies;
+    base.bullets = f.bullets;
+    base.pickups = f.pickups;
+    const oldById = {};
+    for (const q of base.players) oldById[q.id] = q;
+    base.players = f.players.map((fp) => {
+      const prev = oldById[fp.id] || {};
+      return Object.assign({}, prev, fp);
+    });
+  }
+
+  function mergeNetStateMeta(base, m) {
+    if (!base || !m) return;
+    base.roomId = m.roomId;
+    base.w = m.w;
+    base.h = m.h;
+    base.colors = m.colors;
+    base.levelIndex = m.levelIndex;
+    base.wave = m.wave;
+    base.levelCount = m.levelCount;
+    base.waveTotal = m.waveTotal;
+    base.waveEvent = m.waveEvent;
+    base.teamBuffs = m.teamBuffs;
+    base.waveReport = m.waveReport;
+    if (m.bossPhaseBanner !== undefined) base.bossPhaseBanner = m.bossPhaseBanner;
+    base.winKills = m.winKills;
+    for (const mp of m.players) {
+      const t = base.players.find((q) => q.id === mp.id);
+      if (t) Object.assign(t, mp);
+    }
+  }
+
+  function shallowInterpSnap(f) {
+    return {
+      boat: f.boat ? Object.assign({}, f.boat) : null,
+      players: (f.players || []).map((p) => Object.assign({}, p)),
+      enemies: (f.enemies || []).map((e) => Object.assign({}, e)),
+      bullets: (f.bullets || []).map((b) => Object.assign({}, b)),
+      pickups: (f.pickups || []).map((pk) => Object.assign({}, pk)),
+    };
+  }
+
+  function recordOnlineInterpSample(f) {
+    if (mode !== "online" || !f) return;
+    const snap = shallowInterpSnap(f);
+    const now = performance.now();
+    if (onlineInterpCurr) {
+      onlineInterpPrev = onlineInterpCurr;
+      onlineInterpPrevT = onlineInterpCurrT;
+    }
+    onlineInterpCurr = snap;
+    onlineInterpCurrT = now;
+  }
+
+  function onlineInterpAlpha(now) {
+    if (!onlineInterpPrev || !onlineInterpCurr) return null;
+    const delayMs = 72;
+    const targetT = now - delayMs;
+    const span = onlineInterpCurrT - onlineInterpPrevT;
+    if (span < 1e-4) return null;
+    let a = (targetT - onlineInterpPrevT) / span;
+    if (a < 0) a = 0;
+    if (a > 1) a = 1;
+    return { a, snap0: onlineInterpPrev, snap1: onlineInterpCurr };
+  }
+
+  function lerpAngleRad(a0, a1, t) {
+    let d = a1 - a0;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return a0 + d * t;
+  }
+
+  function onlinePlayerForRender(p, myId, oi) {
+    if (!oi || (myId && p.id === myId)) return p;
+    const p0 = oi.snap0.players.find((q) => q.id === p.id);
+    const p1 = oi.snap1.players.find((q) => q.id === p.id);
+    if (!p0 || !p1) return p;
+    const u = oi.a;
+    return Object.assign({}, p, {
+      x: p0.x + (p1.x - p0.x) * u,
+      y: p0.y + (p1.y - p0.y) * u,
+      angle: lerpAngleRad(p0.angle, p1.angle, u),
+    });
+  }
+
+  function onlineEnemiesForRender(list, oi) {
+    if (!list || !oi) return list || [];
+    return list.map((e1, i) => {
+      const e0 = oi.snap0.enemies[i];
+      if (!e0 || e0.type !== e1.type) return e1;
+      const u = oi.a;
+      return Object.assign({}, e1, {
+        x: e0.x + (e1.x - e0.x) * u,
+        y: e0.y + (e1.y - e0.y) * u,
+        r: e0.r + (e1.r - e0.r) * u,
+      });
+    });
+  }
+
+  function onlinePickupForRender(pk, oi) {
+    if (!oi) return pk;
+    const p0 = oi.snap0.pickups.find((q) => q.id === pk.id);
+    const p1 = oi.snap1.pickups.find((q) => q.id === pk.id);
+    if (!p0 || !p1) return pk;
+    const u = oi.a;
+    return Object.assign({}, pk, {
+      x: p0.x + (p1.x - p0.x) * u,
+      y: p0.y + (p1.y - p0.y) * u,
+    });
+  }
+
+  function updateVisualQuality(dt) {
+    visualFpsSampleAcc += dt;
+    visualFpsSampleN++;
+    if (visualFpsSampleAcc < 0.55) return;
+    const avgDt = visualFpsSampleAcc / Math.max(1, visualFpsSampleN);
+    const inst = avgDt > 1e-5 ? 1 / avgDt : 60;
+    visualFpsSmooth = visualFpsSmooth * 0.62 + inst * 0.38;
+    visualFpsSampleAcc = 0;
+    visualFpsSampleN = 0;
+    let next = "high";
+    if (visualFpsSmooth < 36) next = "low";
+    else if (visualFpsSmooth < 50) next = "medium";
+    if (visualQualityTier === "high" && next === "low") next = "medium";
+    if (visualQualityTier === "low" && next === "high") next = "medium";
+    visualQualityTier = next;
+  }
+
+  function visualParticleMul() {
+    if (visualQualityTier === "low") return 0.28;
+    if (visualQualityTier === "medium") return 0.55;
+    return 1;
+  }
+
+  function visualTrailLevel() {
+    if (visualQualityTier === "low") return 0;
+    if (visualQualityTier === "medium") return 1;
+    return 2;
   }
 
   function socketOrigin() {
@@ -1086,6 +1242,11 @@
       socket = null;
     }
     netState = null;
+    netUseSplitSync = false;
+    onlineInterpPrev = null;
+    onlineInterpCurr = null;
+    onlineInterpPrevT = 0;
+    onlineInterpCurrT = 0;
   }
 
   function connectOnline() {
@@ -1104,7 +1265,9 @@
       if (mode === "online") netStatus.textContent = "连接已断开";
     });
     socket.on("state", (s) => {
-      netState = s;
+      if (!netUseSplitSync) {
+        netState = s;
+      }
       if (mode === "online") {
         updateHudOnline();
         if (!s.matchOver) onlineMatchEndShown = false;
@@ -1113,6 +1276,27 @@
           showOnlineMatchOver(s.winnerId === "team" || s.winnerId === socket.id);
         }
       }
+    });
+    socket.on("stateFast", (f) => {
+      if (!netState || !f) return;
+      netUseSplitSync = true;
+      mergeNetStateFast(netState, f);
+      recordOnlineInterpSample(f);
+      if (mode === "online") {
+        updateHudOnline();
+        if (!netState.matchOver) onlineMatchEndShown = false;
+        else if (netState.winnerId && !onlineMatchEndShown) {
+          onlineMatchEndShown = true;
+          showOnlineMatchOver(
+            netState.winnerId === "team" || netState.winnerId === socket.id
+          );
+        }
+      }
+    });
+    socket.on("stateMeta", (m) => {
+      if (!netState || !m) return;
+      mergeNetStateMeta(netState, m);
+      if (mode === "online") updateHudOnline();
     });
     socket.on("hitFx", (d) => {
       if (!d || mode !== "online") return;
@@ -1161,6 +1345,11 @@
     mode = "online";
     prevMyShotFx = 0;
     particles.length = 0;
+    netUseSplitSync = false;
+    onlineInterpPrev = null;
+    onlineInterpCurr = null;
+    onlineInterpPrevT = 0;
+    onlineInterpCurrT = 0;
     if (hudOnlineMeta) hudOnlineMeta.classList.remove("hidden");
     connectOnline();
   }
@@ -1539,7 +1728,8 @@
 
   function addDirectedSparks(x, y, aimAngle, n, baseSpeed) {
     const spd = baseSpeed || 360;
-    for (let i = 0; i < n; i++) {
+    const nEff = Math.max(0, Math.round(n * visualParticleMul()));
+    for (let i = 0; i < nEff; i++) {
       const spread = (Math.random() - 0.5) * 1.8;
       const back = Math.PI + spread * 0.35;
       const a = aimAngle + back + (Math.random() - 0.5) * 0.9;
@@ -1853,7 +2043,8 @@
   }
 
   function addParticles(x, y, color, n) {
-    for (let i = 0; i < n; i++) {
+    const nEff = Math.max(0, Math.round(n * visualParticleMul()));
+    for (let i = 0; i < nEff; i++) {
       const a = Math.random() * Math.PI * 2;
       const sp = rand(80, 220);
       particles.push({
@@ -1912,7 +2103,65 @@
     }
   }
 
+  function drawBulletVisual(b) {
+    const vx = b.vx != null ? b.vx : 0;
+    const vy = b.vy != null ? b.vy : 0;
+    const pl = b.from !== "enemy";
+    const lvl = visualTrailLevel();
+    if (lvl <= 0) {
+      ctx.fillStyle = pl ? "#fff8c0" : "#ffbc90";
+      if (pl && b.shotgun) ctx.fillStyle = "#ffba7a";
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, pl ? 3.2 : 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+    const g = ctx.createLinearGradient(b.x - vx * 0.06, b.y - vy * 0.06, b.x, b.y);
+    if (pl) {
+      if (b.shotgun) {
+        g.addColorStop(0, "rgba(255, 210, 140, 0)");
+        g.addColorStop(0.4, "rgba(255, 170, 90, 0.5)");
+        g.addColorStop(1, "rgba(255, 130, 60, 0.9)");
+      } else {
+        g.addColorStop(0, "rgba(255, 250, 200, 0)");
+        g.addColorStop(0.4, "rgba(255, 240, 120, 0.45)");
+        g.addColorStop(1, "rgba(255, 220, 80, 0.85)");
+      }
+    } else {
+      g.addColorStop(0, "rgba(255, 200, 160, 0)");
+      g.addColorStop(0.45, "rgba(255, 140, 100, 0.5)");
+      g.addColorStop(1, "rgba(255, 100, 60, 0.85)");
+    }
+    ctx.strokeStyle = g;
+    ctx.lineWidth = pl ? 4 : 3;
+    ctx.beginPath();
+    ctx.moveTo(b.x - vx * 0.055, b.y - vy * 0.055);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    if (lvl >= 2) {
+      ctx.strokeStyle = pl ? "rgba(255, 255, 220, 0.65)" : "rgba(255, 200, 160, 0.55)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(b.x - vx * 0.04, b.y - vy * 0.04);
+      ctx.lineTo(b.x - vx * 0.012, b.y - vy * 0.012);
+      ctx.stroke();
+    }
+    ctx.fillStyle = pl ? "#fff8c0" : "#ffbc90";
+    if (pl && b.shotgun) ctx.fillStyle = "#ffba7a";
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, pl ? 4.8 : 3.8, 0, Math.PI * 2);
+    ctx.fill();
+    if (lvl >= 2) {
+      ctx.fillStyle = pl ? "#ffffff" : "#ffe8d0";
+      if (pl && b.shotgun) ctx.fillStyle = "#fff1d8";
+      ctx.beginPath();
+      ctx.arc(b.x - vx * 0.008, b.y - vy * 0.008, pl ? 2.4 : 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   function addHitScatter(x, y, bvx, bvy, palette) {
+    const qm = visualParticleMul();
     const blues = ["#f0ffff", "#b8f5ee", "#6ee7de", "#4ecdc4", "#2a8a82"];
     const reds = ["#ffffff", "#ffd0d0", "#ff9a9a", "#ff6b6b", "#c92a2a"];
     const impact = ["#fffef5", "#fff3c4", "#ffc978", "#ff8a50", "#e8a088"];
@@ -1929,6 +2178,7 @@
     } else {
       colors = impact;
     }
+    count = Math.max(4, Math.round(count * qm));
     const base = Math.atan2(bvy || 0.001, bvx || 0.001);
     const spawnR = 12;
     for (let i = 0; i < count; i++) {
@@ -1951,7 +2201,7 @@
         rot: Math.random() * Math.PI * 2,
       });
     }
-    const sparks = Math.ceil(14 * sparkMul);
+    const sparks = Math.max(2, Math.ceil(14 * sparkMul * qm));
     for (let i = 0; i < sparks; i++) {
       const a = base + (Math.random() - 0.5) * 3.35;
       const sp = rand(180, 460) * sparkMul;
@@ -1987,7 +2237,14 @@
   }
 
   function drawParticlesBatch() {
-    for (const p of particles) {
+    const tier = visualQualityTier;
+    const maxDraw = tier === "low" ? 72 : tier === "medium" ? 150 : 1e9;
+    let drawn = 0;
+    for (let i = 0; i < particles.length; i++) {
+      if (tier === "low" && (i & 1) === 1) continue;
+      if (drawn >= maxDraw) break;
+      drawn++;
+      const p = particles[i];
       ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 3.2));
       ctx.fillStyle = p.color;
       const sz = p.size != null ? p.size : 3;
@@ -2400,50 +2657,7 @@
     if (flash) ctx.globalAlpha = 1;
 
     for (const b of bullets) {
-      const pl = b.from === "player";
-      const g = ctx.createLinearGradient(
-        b.x - b.vx * 0.06,
-        b.y - b.vy * 0.06,
-        b.x,
-        b.y
-      );
-      if (pl) {
-        if (b.shotgun) {
-          g.addColorStop(0, "rgba(255, 210, 140, 0)");
-          g.addColorStop(0.4, "rgba(255, 170, 90, 0.5)");
-          g.addColorStop(1, "rgba(255, 130, 60, 0.9)");
-        } else {
-          g.addColorStop(0, "rgba(255, 250, 200, 0)");
-          g.addColorStop(0.4, "rgba(255, 240, 120, 0.45)");
-          g.addColorStop(1, "rgba(255, 220, 80, 0.85)");
-        }
-      } else {
-        g.addColorStop(0, "rgba(255, 200, 160, 0)");
-        g.addColorStop(0.45, "rgba(255, 140, 100, 0.5)");
-        g.addColorStop(1, "rgba(255, 100, 60, 0.85)");
-      }
-      ctx.strokeStyle = g;
-      ctx.lineWidth = pl ? 4 : 3;
-      ctx.beginPath();
-      ctx.moveTo(b.x - b.vx * 0.055, b.y - b.vy * 0.055);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-      ctx.strokeStyle = pl ? "rgba(255, 255, 220, 0.65)" : "rgba(255, 200, 160, 0.55)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(b.x - b.vx * 0.04, b.y - b.vy * 0.04);
-      ctx.lineTo(b.x - b.vx * 0.012, b.y - b.vy * 0.012);
-      ctx.stroke();
-      ctx.fillStyle = pl ? "#fff8c0" : "#ffbc90";
-      if (pl && b.shotgun) ctx.fillStyle = "#ffba7a";
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, pl ? 4.8 : 3.8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = pl ? "#ffffff" : "#ffe8d0";
-      if (pl && b.shotgun) ctx.fillStyle = "#fff1d8";
-      ctx.beginPath();
-      ctx.arc(b.x - b.vx * 0.008, b.y - b.vy * 0.008, pl ? 2.4 : 2, 0, Math.PI * 2);
-      ctx.fill();
+      drawBulletVisual(b);
     }
     for (const pk of pickups) {
       const blink = pk.life < 2.5 && (performance.now() / 120) % 2 < 1;
@@ -2546,17 +2760,22 @@
     if (mePl && mePl.shotFx > 0.82 && prevMyShotFx < 0.38) addScreenShake(2.7);
     prevMyShotFx = mePl ? mePl.shotFx : 0;
 
+    const nowR = performance.now();
+    const myId = socket && socket.id;
+    const oi = onlineInterpAlpha(nowR);
     const colors = netState.colors || [];
     const deck = netState.boat;
     const crewR = deck ? 8 : PR;
+    const enemiesDraw = onlineEnemiesForRender(netState.enemies || [], oi);
     function drawOnlineCrew() {
       for (const p of netState.players) {
         if (p.respawnMs > 0 && p.hp <= 0) continue;
-        const col = colors[p.colorIndex] || "#888";
+        const pd = onlinePlayerForRender(p, myId, oi);
+        const col = colors[pd.colorIndex] || "#888";
         const flash = p.invuln > 0 && (performance.now() / 100) % 2 < 1;
         const sfx = p.shotFx != null ? p.shotFx : 0;
         if (flash) ctx.globalAlpha = 0.45;
-        drawBoatBean(p.x, p.y, crewR, col, p.angle, {
+        drawBoatBean(pd.x, pd.y, crewR, col, pd.angle, {
           beanOnly: !!deck,
           eyeOffset: socket && p.id === socket.id ? 1 : 0,
           muzzleFlash: sfx * 1.08,
@@ -2567,7 +2786,7 @@
           ctx.strokeStyle = "rgba(255,255,255,0.5)";
           ctx.lineWidth = 2;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, crewR + 4, 0, Math.PI * 2);
+          ctx.arc(pd.x, pd.y, crewR + 4, 0, Math.PI * 2);
           ctx.stroke();
         }
       }
@@ -2591,7 +2810,7 @@
       prevOnlineCapsizeFx = 0;
       drawOnlineCrew();
     }
-    for (const e of netState.enemies || []) {
+    for (const e of enemiesDraw) {
       if (e.type === "jammer" && (e.jamPulseRem || 0) > 0 && (e.jamFieldR || 0) > 0) {
         const jr = e.jamFieldR;
         const pulse = Math.min(1, (e.jamPulseRem || 0) / 0.4);
@@ -2615,7 +2834,7 @@
         ctx.stroke();
       }
     }
-    for (const e of netState.enemies || []) {
+    for (const e of enemiesDraw) {
       const ec =
         e.type === "turret"
           ? "#ff9f43"
@@ -2641,97 +2860,58 @@
       }
     }
     for (const b of netState.bullets || []) {
-      const vx = b.vx != null ? b.vx : 0;
-      const vy = b.vy != null ? b.vy : 0;
-      const pl = b.from !== "enemy";
-      const g = ctx.createLinearGradient(b.x - vx * 0.06, b.y - vy * 0.06, b.x, b.y);
-      if (pl) {
-        if (b.shotgun) {
-          g.addColorStop(0, "rgba(255, 210, 140, 0)");
-          g.addColorStop(0.4, "rgba(255, 170, 90, 0.5)");
-          g.addColorStop(1, "rgba(255, 130, 60, 0.9)");
-        } else {
-          g.addColorStop(0, "rgba(255, 250, 200, 0)");
-          g.addColorStop(0.4, "rgba(255, 240, 120, 0.45)");
-          g.addColorStop(1, "rgba(255, 220, 80, 0.85)");
-        }
-      } else {
-        g.addColorStop(0, "rgba(255, 200, 160, 0)");
-        g.addColorStop(0.45, "rgba(255, 140, 100, 0.5)");
-        g.addColorStop(1, "rgba(255, 100, 60, 0.85)");
-      }
-      ctx.strokeStyle = g;
-      ctx.lineWidth = pl ? 4 : 3;
-      ctx.beginPath();
-      ctx.moveTo(b.x - vx * 0.055, b.y - vy * 0.055);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-      ctx.strokeStyle = pl ? "rgba(255, 255, 220, 0.65)" : "rgba(255, 200, 160, 0.55)";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(b.x - vx * 0.04, b.y - vy * 0.04);
-      ctx.lineTo(b.x - vx * 0.012, b.y - vy * 0.012);
-      ctx.stroke();
-      ctx.fillStyle = pl ? "#fff8c0" : "#ffbc90";
-      if (pl && b.shotgun) ctx.fillStyle = "#ffba7a";
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, pl ? 4.8 : 3.8, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = pl ? "#ffffff" : "#ffe8d0";
-      if (pl && b.shotgun) ctx.fillStyle = "#fff1d8";
-      ctx.beginPath();
-      ctx.arc(b.x - vx * 0.008, b.y - vy * 0.008, pl ? 2.4 : 2, 0, Math.PI * 2);
-      ctx.fill();
+      drawBulletVisual(b);
     }
     for (const pk of netState.pickups || []) {
-      const blink = pk.ttlMs < 2500 && (performance.now() / 120) % 2 < 1;
+      const pkd = onlinePickupForRender(pk, oi);
+      const blink = pkd.ttlMs < 2500 && (performance.now() / 120) % 2 < 1;
       if (blink) ctx.globalAlpha = 0.45;
-      if (pk.type === "shotgun") {
+      if (pkd.type === "shotgun") {
         ctx.fillStyle = "rgba(255,175,80,0.18)";
         ctx.beginPath();
-        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.arc(pkd.x, pkd.y, 18, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = "rgba(255,185,95,0.9)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(pk.x - 10, pk.y + 6);
-        ctx.lineTo(pk.x + 10, pk.y - 6);
+        ctx.moveTo(pkd.x - 10, pkd.y + 6);
+        ctx.lineTo(pkd.x + 10, pkd.y - 6);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(pk.x - 10, pk.y - 2);
-        ctx.lineTo(pk.x + 10, pk.y - 10);
+        ctx.moveTo(pkd.x - 10, pkd.y - 2);
+        ctx.lineTo(pkd.x + 10, pkd.y - 10);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(pk.x - 10, pk.y + 12);
-        ctx.lineTo(pk.x + 10, pk.y + 2);
+        ctx.moveTo(pkd.x - 10, pkd.y + 12);
+        ctx.lineTo(pkd.x + 10, pkd.y + 2);
         ctx.stroke();
-      } else if (pk.type === "shield") {
+      } else if (pkd.type === "shield") {
         ctx.fillStyle = "rgba(80,170,255,0.16)";
         ctx.beginPath();
-        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.arc(pkd.x, pkd.y, 18, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = "rgba(125,200,255,0.9)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(pk.x, pk.y, 10, Math.PI * 0.2, Math.PI * 1.8);
+        ctx.arc(pkd.x, pkd.y, 10, Math.PI * 0.2, Math.PI * 1.8);
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(pk.x, pk.y - 10);
-        ctx.lineTo(pk.x, pk.y + 10);
+        ctx.moveTo(pkd.x, pkd.y - 10);
+        ctx.lineTo(pkd.x, pkd.y + 10);
         ctx.stroke();
-      } else if (pk.type === "rapidfire") {
+      } else if (pkd.type === "rapidfire") {
         ctx.fillStyle = "rgba(255,120,80,0.16)";
         ctx.beginPath();
-        ctx.arc(pk.x, pk.y, 18, 0, Math.PI * 2);
+        ctx.arc(pkd.x, pkd.y, 18, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = "rgba(255,170,120,0.95)";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(pk.x - 8, pk.y + 8);
-        ctx.lineTo(pk.x - 1, pk.y - 8);
-        ctx.lineTo(pk.x + 2, pk.y - 1);
-        ctx.lineTo(pk.x + 8, pk.y - 1);
-        ctx.lineTo(pk.x + 1, pk.y + 8);
+        ctx.moveTo(pkd.x - 8, pkd.y + 8);
+        ctx.lineTo(pkd.x - 1, pkd.y - 8);
+        ctx.lineTo(pkd.x + 2, pkd.y - 1);
+        ctx.lineTo(pkd.x + 8, pkd.y - 1);
+        ctx.lineTo(pkd.x + 1, pkd.y + 8);
         ctx.closePath();
         ctx.stroke();
       }
@@ -2837,6 +3017,7 @@
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    updateVisualQuality(dt);
     screenShake = Math.max(0, screenShake - dt * 40);
     if (mode === "offline" && state === "play") {
       updateOffline(dt);
