@@ -27,8 +27,11 @@ const RESPAWN_MS = 2800;
 const WIN_KILLS = 10;
 const BULLET_LIFE = 1.2;
 const TICK_MS = 1000 / 60;
-/** 低频 meta 同步间隔（tick 数），与 stateFast 搭配 */
-const STATE_META_EVERY = 5;
+const STATE_FAST_EVERY = 2;
+const STATE_META_EVERY = 10;
+const STATE_FULL_EVERY = 120;
+const FAST_FULL_SNAPSHOT_EVERY = 15;
+const NET_METRICS_LOG_EVERY_MS = 5000;
 const BOAT_CLAMP = 34;
 /** 颠簸：速度 + 后坐力累积，满则翻船 */
 const CAPSIZE_TILT_DECAY = 0.36;
@@ -134,6 +137,37 @@ const COLORS = [
 
 const rooms = new Map();
 
+function nowMs() {
+  return Date.now();
+}
+
+function n1(v) {
+  return Math.round(v * 10) / 10;
+}
+
+function emitWithMetrics(io, room, event, payload) {
+  const s = JSON.stringify(payload);
+  const bytes = Buffer.byteLength(s, "utf8");
+  if (!room.netMetrics) {
+    room.netMetrics = {
+      windowStartMs: nowMs(),
+      bytesOut: 0,
+      messagesOut: 0,
+      fastOut: 0,
+      metaOut: 0,
+      fullOut: 0,
+      tickCount: 0,
+      tickTotalMs: 0,
+    };
+  }
+  room.netMetrics.bytesOut += bytes;
+  room.netMetrics.messagesOut += 1;
+  if (event === "stateFast") room.netMetrics.fastOut += 1;
+  else if (event === "stateMeta") room.netMetrics.metaOut += 1;
+  else if (event === "state") room.netMetrics.fullOut += 1;
+  io.to(room.id).emit(event, payload);
+}
+
 function vecLen(x, y) {
   return Math.hypot(x, y);
 }
@@ -229,6 +263,16 @@ function spawnEnemy(cfg, typeOverride) {
   return base;
 }
 
+function nextEnemyId(room) {
+  room.enemyIdSeq = (room.enemyIdSeq || 0) + 1;
+  return "e_" + room.enemyIdSeq.toString(36);
+}
+
+function nextBulletId(room) {
+  room.bulletIdSeq = (room.bulletIdSeq || 0) + 1;
+  return "b_" + room.bulletIdSeq.toString(36);
+}
+
 function spawnBossMinion(room, boss) {
   const summons = room.enemies.filter((x) => x.isBossSummon).length;
   if (summons >= 4) return;
@@ -252,6 +296,7 @@ function spawnBossMinion(room, boss) {
   m.x = Math.max(34, Math.min(W - 34, boss.x + Math.cos(a) * dist));
   m.y = Math.max(34, Math.min(H - 34, boss.y + Math.sin(a) * dist));
   m.isBossSummon = true;
+  m.id = nextEnemyId(room);
   room.enemies.push(m);
 }
 
@@ -318,7 +363,9 @@ function spawnWave(room, levelIndex, waveNum) {
   const n = Math.max(1, room.players.size);
   const composition = buildWaveComposition(levelIndex, waveNum, n);
   for (let i = 0; i < composition.length; i++) {
-    room.enemies.push(spawnEnemy(cfg, composition[i]));
+    const e = spawnEnemy(cfg, composition[i]);
+    e.id = nextEnemyId(room);
+    room.enemies.push(e);
   }
 }
 
@@ -412,6 +459,11 @@ function getOrCreateRoom(roomId) {
       netSeq: 0,
       metaSeq: 0,
       metaTickAcc: 0,
+      syncTickAcc: 0,
+      enemyIdSeq: 0,
+      bulletIdSeq: 0,
+      fastDeltaCache: null,
+      netMetrics: null,
     });
   }
   return rooms.get(roomId);
@@ -506,6 +558,7 @@ function resetMatch(room) {
   assignSlots(room);
   room.bullets = [];
   room.enemies = [];
+  room.fastDeltaCache = null;
   spawnWave(room, room.levelIndex, room.wave);
 }
 
@@ -714,6 +767,7 @@ function simRoom(room, dt, io) {
       for (const s of spreads) {
         const a = baseA + s;
         room.bullets.push({
+          id: nextBulletId(room),
           x: mz.x,
           y: mz.y,
           vx: Math.cos(a) * BULLET_SPEED * 0.92,
@@ -727,6 +781,7 @@ function simRoom(room, dt, io) {
       }
     } else {
       room.bullets.push({
+        id: nextBulletId(room),
         x: mz.x,
         y: mz.y,
         vx: dir.x * BULLET_SPEED,
@@ -947,6 +1002,7 @@ function simRoom(room, dt, io) {
         const spread = shots === 1 ? 0 : (si - (shots - 1) * 0.5) * 0.19;
         const a = Math.atan2(bd.y, bd.x) + spread;
         room.bullets.push({
+          id: nextBulletId(room),
           x: e.x + Math.cos(a) * md,
           y: e.y + Math.sin(a) * md,
           vx: Math.cos(a) * eBulletSpd * enemyBulletMul,
@@ -1122,6 +1178,7 @@ function serializeRoom(room) {
   }
   players.sort((a, b) => a.id.localeCompare(b.id));
   const bullets = room.bullets.map((b) => ({
+    id: b.id,
     x: b.x,
     y: b.y,
     vx: b.vx,
@@ -1139,6 +1196,7 @@ function serializeRoom(room) {
   }));
   const enemies = room.enemies.map((e) => {
     const o = {
+      id: e.id,
       x: e.x,
       y: e.y,
       r: e.r,
@@ -1218,25 +1276,27 @@ function serializeRoomFast(room) {
   room.netSeq = (room.netSeq || 0) + 1;
   const players = [];
   const B = room.boat || { x: W * 0.5, y: H * 0.72 };
+  const now = Date.now();
   for (const p of room.players.values()) {
     const wp = worldPos(room, p);
     players.push({
       id: p.id,
-      x: wp.x,
-      y: wp.y,
+      x: n1(wp.x),
+      y: n1(wp.y),
       angle: p.angle,
       hp: p.hp,
       invuln: p.invuln,
-      respawnMs: p.respawnAt > Date.now() ? p.respawnAt - Date.now() : 0,
+      respawnMs: p.respawnAt > now ? p.respawnAt - now : 0,
       shotFx: p.shotFx || 0,
     });
   }
   players.sort((a, b) => a.id.localeCompare(b.id));
   const bullets = room.bullets.map((b) => ({
-    x: b.x,
-    y: b.y,
-    vx: b.vx,
-    vy: b.vy,
+    id: b.id,
+    x: n1(b.x),
+    y: n1(b.y),
+    vx: n1(b.vx),
+    vy: n1(b.vy),
     from: b.from || "player",
     shotgun: !!b.shotgun,
     ownerId: b.ownerId,
@@ -1244,15 +1304,16 @@ function serializeRoomFast(room) {
   const pickups = room.pickups.map((pk) => ({
     id: pk.id,
     type: pk.type,
-    x: pk.x,
-    y: pk.y,
-    ttlMs: Math.max(0, pk.until - Date.now()),
+    x: n1(pk.x),
+    y: n1(pk.y),
+    ttlMs: Math.max(0, pk.until - now),
   }));
   const enemies = room.enemies.map((e) => {
     const o = {
-      x: e.x,
-      y: e.y,
-      r: e.r,
+      id: e.id,
+      x: n1(e.x),
+      y: n1(e.y),
+      r: n1(e.r),
       hp: e.hp,
       type: e.type || "assault",
       muzzleFlash: e.muzzleFlash || 0,
@@ -1268,8 +1329,84 @@ function serializeRoomFast(room) {
     }
     return o;
   });
+  const fullSync = !room.fastDeltaCache || room.netSeq % FAST_FULL_SNAPSHOT_EVERY === 0;
+  if (fullSync) {
+    room.fastDeltaCache = {
+      players: new Map(players.map((p) => [p.id, JSON.stringify(p)])),
+      enemies: new Map(enemies.map((e) => [e.id, JSON.stringify(e)])),
+      bullets: new Map(bullets.map((b) => [b.id, JSON.stringify(b)])),
+      pickups: new Map(pickups.map((pk) => [pk.id, JSON.stringify(pk)])),
+    };
+    return {
+      seq: room.netSeq,
+      fullSync: true,
+      boat: {
+        x: B.x,
+        y: B.y,
+        pvx: B.pvx,
+        pvy: B.pvy,
+        tilt: B.tilt != null ? B.tilt : 0,
+        capsizeFx: room.capsizeFx != null ? room.capsizeFx : 0,
+      },
+      started: !!room.started,
+      matchOver: !!room.matchOver,
+      winnerId: room.winnerId,
+      players,
+      enemies,
+      pickups,
+      bullets,
+      removedEnemyIds: [],
+      removedBulletIds: [],
+      removedPickupIds: [],
+      removedPlayerIds: [],
+    };
+  }
+  const cache = room.fastDeltaCache;
+  const nextPlayers = new Map();
+  const nextEnemies = new Map();
+  const nextBullets = new Map();
+  const nextPickups = new Map();
+  const changedPlayers = [];
+  const changedEnemies = [];
+  const changedBullets = [];
+  const changedPickups = [];
+  for (const p of players) {
+    const sig = JSON.stringify(p);
+    nextPlayers.set(p.id, sig);
+    if (cache.players.get(p.id) !== sig) changedPlayers.push(p);
+  }
+  for (const e of enemies) {
+    const sig = JSON.stringify(e);
+    nextEnemies.set(e.id, sig);
+    if (cache.enemies.get(e.id) !== sig) changedEnemies.push(e);
+  }
+  for (const b of bullets) {
+    const sig = JSON.stringify(b);
+    nextBullets.set(b.id, sig);
+    if (cache.bullets.get(b.id) !== sig) changedBullets.push(b);
+  }
+  for (const pk of pickups) {
+    const sig = JSON.stringify(pk);
+    nextPickups.set(pk.id, sig);
+    if (cache.pickups.get(pk.id) !== sig) changedPickups.push(pk);
+  }
+  const removedPlayerIds = [];
+  const removedEnemyIds = [];
+  const removedBulletIds = [];
+  const removedPickupIds = [];
+  for (const id of cache.players.keys()) if (!nextPlayers.has(id)) removedPlayerIds.push(id);
+  for (const id of cache.enemies.keys()) if (!nextEnemies.has(id)) removedEnemyIds.push(id);
+  for (const id of cache.bullets.keys()) if (!nextBullets.has(id)) removedBulletIds.push(id);
+  for (const id of cache.pickups.keys()) if (!nextPickups.has(id)) removedPickupIds.push(id);
+  room.fastDeltaCache = {
+    players: nextPlayers,
+    enemies: nextEnemies,
+    bullets: nextBullets,
+    pickups: nextPickups,
+  };
   return {
     seq: room.netSeq,
+    fullSync: false,
     boat: {
       x: B.x,
       y: B.y,
@@ -1281,10 +1418,14 @@ function serializeRoomFast(room) {
     started: !!room.started,
     matchOver: !!room.matchOver,
     winnerId: room.winnerId,
-    players,
-    enemies,
-    pickups,
-    bullets,
+    players: changedPlayers,
+    enemies: changedEnemies,
+    pickups: changedPickups,
+    bullets: changedBullets,
+    removedEnemyIds,
+    removedBulletIds,
+    removedPickupIds,
+    removedPlayerIds,
   };
 }
 
@@ -1349,13 +1490,30 @@ function serializeRoomMeta(room) {
 
 function emitRoomLobbySync(io, room) {
   if (!room) return;
-  io.to(room.id).emit("state", serializeRoom(room));
-  io.to(room.id).emit("stateFast", serializeRoomFast(room));
-  io.to(room.id).emit("stateMeta", serializeRoomMeta(room));
+  emitWithMetrics(io, room, "state", serializeRoom(room));
+  emitWithMetrics(io, room, "stateFast", serializeRoomFast(room));
+  emitWithMetrics(io, room, "stateMeta", serializeRoomMeta(room));
 }
 
 const app = express();
 app.use(express.static(path.join(__dirname)));
+app.get("/debug/net", (_req, res) => {
+  const out = [];
+  for (const room of rooms.values()) {
+    const m = room.netMetrics;
+    out.push({
+      roomId: room.id,
+      players: room.players.size,
+      syncTickAcc: room.syncTickAcc || 0,
+      bytesOutWindow: m ? m.bytesOut : 0,
+      messagesOutWindow: m ? m.messagesOut : 0,
+      fastOutWindow: m ? m.fastOut : 0,
+      metaOutWindow: m ? m.metaOut : 0,
+      fullOutWindow: m ? m.fullOut : 0,
+    });
+  }
+  res.json({ rooms: out, now: nowMs() });
+});
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
@@ -1470,15 +1628,54 @@ io.on("connection", (socket) => {
 setInterval(() => {
   const dt = TICK_MS / 1000;
   for (const room of rooms.values()) {
+    const t0 = nowMs();
     simRoom(room, dt, io);
-    io.to(room.id).emit("stateFast", serializeRoomFast(room));
-    room.metaTickAcc = (room.metaTickAcc || 0) + 1;
-    if (room.metaTickAcc % STATE_META_EVERY === 0) {
-      io.to(room.id).emit("stateMeta", serializeRoomMeta(room));
+    room.syncTickAcc = (room.syncTickAcc || 0) + 1;
+    if (room.syncTickAcc % STATE_FAST_EVERY === 0) {
+      emitWithMetrics(io, room, "stateFast", serializeRoomFast(room));
     }
-    io.to(room.id).emit("state", serializeRoom(room));
+    if (room.syncTickAcc % STATE_META_EVERY === 0) {
+      emitWithMetrics(io, room, "stateMeta", serializeRoomMeta(room));
+    }
+    if (room.syncTickAcc % STATE_FULL_EVERY === 0) {
+      emitWithMetrics(io, room, "state", serializeRoom(room));
+    }
+    if (room.netMetrics) {
+      room.netMetrics.tickCount += 1;
+      room.netMetrics.tickTotalMs += nowMs() - t0;
+    }
   }
 }, TICK_MS);
+
+setInterval(() => {
+  const t = nowMs();
+  for (const room of rooms.values()) {
+    const m = room.netMetrics;
+    if (!m) continue;
+    const sec = Math.max(1, (t - m.windowStartMs) / 1000);
+    const out = {
+      roomId: room.id,
+      players: room.players.size,
+      bytesOutPerSec: Math.round(m.bytesOut / sec),
+      messagesOutPerSec: Math.round(m.messagesOut / sec),
+      avgTickMs: +(m.tickTotalMs / Math.max(1, m.tickCount)).toFixed(2),
+      fastPerSec: +(m.fastOut / sec).toFixed(2),
+      metaPerSec: +(m.metaOut / sec).toFixed(2),
+      fullPerSec: +(m.fullOut / sec).toFixed(2),
+    };
+    console.log("[net-metrics]", JSON.stringify(out));
+    room.netMetrics = {
+      windowStartMs: t,
+      bytesOut: 0,
+      messagesOut: 0,
+      fastOut: 0,
+      metaOut: 0,
+      fullOut: 0,
+      tickCount: 0,
+      tickTotalMs: 0,
+    };
+  }
+}, NET_METRICS_LOG_EVERY_MS);
 
 const PORT = process.env.PORT || 3333;
 httpServer.listen(PORT, () => {

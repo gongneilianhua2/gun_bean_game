@@ -82,6 +82,25 @@ npm start
 
 > 如果你从本地文件直接打开页面（`file://`），客户端会尝试连接到 `http://localhost:3333`。
 
+### 联机性能观测
+
+- 服务端每 `5s` 会输出一条 `[net-metrics]` 日志，包含：
+  - `bytesOutPerSec`（下行带宽估算）
+  - `messagesOutPerSec`（消息频率）
+  - `avgTickMs`（主循环平均耗时）
+  - `fastPerSec / metaPerSec / fullPerSec`（各同步通道频率）
+- 可访问 `http://localhost:3333/debug/net` 查看房间窗口指标快照。
+- 当前默认同步策略：
+  - `stateFast`：约 `30Hz`
+  - `stateMeta`：约 `6Hz`
+  - `state`：约 `0.5Hz`（兜底全量 + 房间关键事件立即发送）
+
+### 弱网与回归测试建议
+
+- 浏览器 DevTools Network Throttling 设置 `100ms` 延迟 + `3%-8%` 丢包。
+- 重点验证：波次推进、复活、翻船、断线重连（10s 宽限）与局后结算一致性。
+- 建议至少进行 `2/4/8` 人房间压测，并记录上述 `net-metrics` 指标对比优化前后数据。
+
 ---
 
 ## 已完成优化（里程碑）

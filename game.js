@@ -600,6 +600,13 @@
   let onlineInterpCurr = null;
   let onlineInterpPrevT = 0;
   let onlineInterpCurrT = 0;
+  let onlineInterpDelayMs = 72;
+  let onlineLastFastRecvAt = 0;
+  let onlineFastIntervals = [];
+  let netLastFastSeq = 0;
+  let netLastMetaSeq = 0;
+  let lastSentInputAt = 0;
+  let lastSentInputSig = "";
   let visualQualityTier = "high";
   let visualFpsSmooth = 60;
   let visualFpsSampleAcc = 0;
@@ -634,21 +641,40 @@
     return a + Math.random() * (b - a);
   }
 
+  function applyDeltaById(baseArr, upserts, removedIds) {
+    const m = new Map();
+    for (const it of baseArr || []) m.set(it.id, it);
+    for (const id of removedIds || []) m.delete(id);
+    for (const it of upserts || []) {
+      if (!it || !it.id) continue;
+      const prev = m.get(it.id);
+      m.set(it.id, prev ? Object.assign({}, prev, it) : it);
+    }
+    return [...m.values()];
+  }
+
   function mergeNetStateFast(base, f) {
     if (!base || !f) return;
     base.boat = f.boat;
     base.started = !!f.started;
     base.matchOver = !!f.matchOver;
     base.winnerId = f.winnerId;
-    base.enemies = f.enemies;
-    base.bullets = f.bullets;
-    base.pickups = f.pickups;
-    const oldById = {};
-    for (const q of base.players) oldById[q.id] = q;
-    base.players = f.players.map((fp) => {
-      const prev = oldById[fp.id] || {};
-      return Object.assign({}, prev, fp);
-    });
+    if (f.fullSync || !netUseSplitSync) {
+      base.enemies = f.enemies || [];
+      base.bullets = f.bullets || [];
+      base.pickups = f.pickups || [];
+      const oldById = {};
+      for (const q of base.players || []) oldById[q.id] = q;
+      base.players = (f.players || []).map((fp) => {
+        const prev = oldById[fp.id] || {};
+        return Object.assign({}, prev, fp);
+      });
+      return;
+    }
+    base.players = applyDeltaById(base.players || [], f.players || [], f.removedPlayerIds || []);
+    base.enemies = applyDeltaById(base.enemies || [], f.enemies || [], f.removedEnemyIds || []);
+    base.bullets = applyDeltaById(base.bullets || [], f.bullets || [], f.removedBulletIds || []);
+    base.pickups = applyDeltaById(base.pickups || [], f.pickups || [], f.removedPickupIds || []);
   }
 
   function mergeNetStateMeta(base, m) {
@@ -686,6 +712,17 @@
     if (mode !== "online" || !f) return;
     const snap = shallowInterpSnap(f);
     const now = performance.now();
+    if (onlineLastFastRecvAt > 0) {
+      const gap = now - onlineLastFastRecvAt;
+      if (gap >= 4 && gap < 500) {
+        onlineFastIntervals.push(gap);
+        if (onlineFastIntervals.length > 24) onlineFastIntervals.shift();
+        const sorted = onlineFastIntervals.slice().sort((a, b) => a - b);
+        const p80 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.8))];
+        onlineInterpDelayMs = Math.max(50, Math.min(120, p80 * 1.35));
+      }
+    }
+    onlineLastFastRecvAt = now;
     if (onlineInterpCurr) {
       onlineInterpPrev = onlineInterpCurr;
       onlineInterpPrevT = onlineInterpCurrT;
@@ -696,8 +733,7 @@
 
   function onlineInterpAlpha(now) {
     if (!onlineInterpPrev || !onlineInterpCurr) return null;
-    const delayMs = 72;
-    const targetT = now - delayMs;
+    const targetT = now - onlineInterpDelayMs;
     const span = onlineInterpCurrT - onlineInterpPrevT;
     if (span < 1e-4) return null;
     let a = (targetT - onlineInterpPrevT) / span;
@@ -728,8 +764,8 @@
 
   function onlineEnemiesForRender(list, oi) {
     if (!list || !oi) return list || [];
-    return list.map((e1, i) => {
-      const e0 = oi.snap0.enemies[i];
+    return list.map((e1) => {
+      const e0 = (oi.snap0.enemies || []).find((q) => q.id === e1.id);
       if (!e0 || e0.type !== e1.type) return e1;
       const u = oi.a;
       return Object.assign({}, e1, {
@@ -1247,6 +1283,13 @@
     onlineInterpCurr = null;
     onlineInterpPrevT = 0;
     onlineInterpCurrT = 0;
+    onlineInterpDelayMs = 72;
+    onlineLastFastRecvAt = 0;
+    onlineFastIntervals = [];
+    netLastFastSeq = 0;
+    netLastMetaSeq = 0;
+    lastSentInputAt = 0;
+    lastSentInputSig = "";
   }
 
   function connectOnline() {
@@ -1279,6 +1322,8 @@
     });
     socket.on("stateFast", (f) => {
       if (!netState || !f) return;
+      if (typeof f.seq === "number" && f.seq <= netLastFastSeq) return;
+      if (typeof f.seq === "number") netLastFastSeq = f.seq;
       netUseSplitSync = true;
       mergeNetStateFast(netState, f);
       recordOnlineInterpSample(f);
@@ -1295,6 +1340,8 @@
     });
     socket.on("stateMeta", (m) => {
       if (!netState || !m) return;
+      if (typeof m.metaSeq === "number" && m.metaSeq <= netLastMetaSeq) return;
+      if (typeof m.metaSeq === "number") netLastMetaSeq = m.metaSeq;
       mergeNetStateMeta(netState, m);
       if (mode === "online") updateHudOnline();
     });
@@ -1350,6 +1397,13 @@
     onlineInterpCurr = null;
     onlineInterpPrevT = 0;
     onlineInterpCurrT = 0;
+    onlineInterpDelayMs = 72;
+    onlineLastFastRecvAt = 0;
+    onlineFastIntervals = [];
+    netLastFastSeq = 0;
+    netLastMetaSeq = 0;
+    lastSentInputAt = 0;
+    lastSentInputSig = "";
     if (hudOnlineMeta) hudOnlineMeta.classList.remove("hidden");
     connectOnline();
   }
@@ -2996,7 +3050,7 @@
     ctx.restore();
   }
 
-  function sendOnlineInput() {
+  function sendOnlineInput(now) {
     if (mode !== "online" || !socket || !socket.connected) return;
     if (tutorialActive) return;
     const p = clientToArena(mouse.x, mouse.y);
@@ -3007,6 +3061,13 @@
       const me = netState.players.find((p) => p.id === socket.id);
       if (me) angle = Math.atan2(my - me.y, mx - me.x);
     }
+    const shoot = !!mouse.down;
+    const sig = (shoot ? "1" : "0") + "|" + angle.toFixed(3);
+    const force = sig !== lastSentInputSig;
+    const cadenceMs = 1000 / 30;
+    if (!force && now - lastSentInputAt < cadenceMs) return;
+    lastSentInputAt = now;
+    lastSentInputSig = sig;
     socket.emit("input", {
       shoot: mouse.down,
       angle,
@@ -3022,7 +3083,7 @@
     if (mode === "offline" && state === "play") {
       updateOffline(dt);
     } else if (mode === "online") {
-      sendOnlineInput();
+      sendOnlineInput(now);
     }
     updateParticles(dt);
     updateHitIndicators(dt);
