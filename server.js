@@ -32,6 +32,9 @@ const STATE_META_EVERY = 10;
 const STATE_FULL_EVERY = 120;
 const FAST_FULL_SNAPSHOT_EVERY = 15;
 const NET_METRICS_LOG_EVERY_MS = 5000;
+const ROOM_MAX_PLAYERS_DEFAULT = 4;
+const ROOM_MAX_PLAYERS_MIN = 2;
+const ROOM_MAX_PLAYERS_MAX = 8;
 const BOAT_CLAMP = 34;
 /** 颠簸：速度 + 后坐力累积，满则翻船 */
 const CAPSIZE_TILT_DECAY = 0.36;
@@ -57,6 +60,10 @@ const EDGE_REPEL_ZONE = 120;
 const EDGE_REPEL_FORCE = 260;
 const WALL_TURN_ASSIST_ZONE = 56;
 const WALL_TURN_ASSIST = 0.38;
+const SEPARATION_ITERS = 3;
+const SEPARATION_MARGIN = 2;
+const PLAYER_REPEL_R = PLAYER_R + 14;
+const PLAYER_REPEL_STRENGTH = 0.58;
 
 const DEFAULT_WAVE_CFG = {
   count: 3,
@@ -273,6 +280,61 @@ function nextBulletId(room) {
   return "b_" + room.bulletIdSeq.toString(36);
 }
 
+function clampEnemyToArena(e) {
+  e.x = Math.max(e.r + 2, Math.min(W - e.r - 2, e.x));
+  e.y = Math.max(e.r + 2, Math.min(H - e.r - 2, e.y));
+}
+
+function separateEnemiesIter(room) {
+  for (let it = 0; it < SEPARATION_ITERS; it++) {
+    for (let i = 0; i < room.enemies.length; i++) {
+      for (let j = i + 1; j < room.enemies.length; j++) {
+        const a = room.enemies[i];
+        const b = room.enemies[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const minD = a.r + b.r + SEPARATION_MARGIN;
+        if (d >= minD) continue;
+        const overlap = (minD - d) * 0.5;
+        const nx = dx / d;
+        const ny = dy / d;
+        a.x -= nx * overlap;
+        a.y -= ny * overlap;
+        b.x += nx * overlap;
+        b.y += ny * overlap;
+      }
+    }
+    for (const e of room.enemies) clampEnemyToArena(e);
+  }
+}
+
+function repelEnemiesFromPlayers(room) {
+  const aliveSeats = [];
+  const now = Date.now();
+  for (const p of room.players.values()) {
+    if (p.hp <= 0) continue;
+    if (p.respawnAt > 0 && now < p.respawnAt) continue;
+    aliveSeats.push(worldPos(room, p));
+  }
+  if (aliveSeats.length === 0) return;
+  for (const e of room.enemies) {
+    for (const s of aliveSeats) {
+      const dx = e.x - s.x;
+      const dy = e.y - s.y;
+      const d = Math.hypot(dx, dy) || 0.0001;
+      const minD = e.r + PLAYER_REPEL_R;
+      if (d >= minD) continue;
+      const push = (minD - d) * PLAYER_REPEL_STRENGTH;
+      const nx = dx / d;
+      const ny = dy / d;
+      e.x += nx * push;
+      e.y += ny * push;
+    }
+    clampEnemyToArena(e);
+  }
+}
+
 function spawnBossMinion(room, boss) {
   const summons = room.enemies.filter((x) => x.isBossSummon).length;
   if (summons >= 4) return;
@@ -429,6 +491,13 @@ function worldPos(room, p) {
 
 function getOrCreateRoom(roomId) {
   if (!rooms.has(roomId)) {
+    const opts = arguments[1] || {};
+    const visibility = opts.visibility === "private" ? "private" : "public";
+    const maxPlayers = Math.max(
+      ROOM_MAX_PLAYERS_MIN,
+      Math.min(ROOM_MAX_PLAYERS_MAX, (opts.maxPlayers | 0) || ROOM_MAX_PLAYERS_DEFAULT)
+    );
+    const joinCode = visibility === "private" ? String(opts.joinCode || "").slice(0, 24) : "";
     rooms.set(roomId, {
       id: roomId,
       players: new Map(),
@@ -464,9 +533,18 @@ function getOrCreateRoom(roomId) {
       bulletIdSeq: 0,
       fastDeltaCache: null,
       netMetrics: null,
+      hostId: null,
+      visibility,
+      joinCode,
+      maxPlayers,
+      lockOnStart: true,
     });
   }
   return rooms.get(roomId);
+}
+
+function roomLocked(room) {
+  return !!(room && room.lockOnStart && room.started && !room.matchOver);
 }
 
 function nextColorIndex(room) {
@@ -513,15 +591,35 @@ function reclaimPlayer(room, oldId, newId) {
   for (const b of room.bullets) {
     if (b.ownerId === oldId) b.ownerId = newId;
   }
+  if (room.hostId === oldId) room.hostId = newId;
   assignSlots(room);
   return p;
+}
+
+function transferHostIfNeeded(room) {
+  if (!room || room.players.size === 0) return;
+  const cur = room.hostId ? room.players.get(room.hostId) : null;
+  if (cur && cur.connected) return;
+  const ids = [...room.players.keys()].sort();
+  for (const id of ids) {
+    const p = room.players.get(id);
+    if (p && p.connected) {
+      room.hostId = id;
+      return;
+    }
+  }
+  room.hostId = ids.length ? ids[0] : null;
 }
 
 function removePlayer(room, socketId) {
   room.players.delete(socketId);
   room.bullets = room.bullets.filter((b) => b.ownerId !== socketId);
+  if (room.hostId === socketId) room.hostId = null;
   if (room.players.size === 0) rooms.delete(room.id);
-  else assignSlots(room);
+  else {
+    assignSlots(room);
+    transferHostIfNeeded(room);
+  }
 }
 
 function resetMatch(room) {
@@ -564,6 +662,9 @@ function resetMatch(room) {
 
 function canStartRoom(room) {
   if (!room || room.players.size === 0) return false;
+  if (!room.hostId) return false;
+  const host = room.players.get(room.hostId);
+  if (!host || !host.connected) return false;
   for (const p of room.players.values()) {
     if (!p.ready) return false;
   }
@@ -1018,26 +1119,9 @@ function simRoom(room, dt, io) {
     }
   }
 
-  // Prevent enemy beans from passing through each other.
-  for (let i = 0; i < room.enemies.length; i++) {
-    for (let j = i + 1; j < room.enemies.length; j++) {
-      const a = room.enemies[i];
-      const b = room.enemies[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const d = Math.hypot(dx, dy) || 0.0001;
-      const minD = a.r + b.r + 2;
-      if (d < minD) {
-        const overlap = (minD - d) * 0.5;
-        const nx = dx / d;
-        const ny = dy / d;
-        a.x -= nx * overlap;
-        a.y -= ny * overlap;
-        b.x += nx * overlap;
-        b.y += ny * overlap;
-      }
-    }
-  }
+  repelEnemiesFromPlayers(room);
+  separateEnemiesIter(room);
+  repelEnemiesFromPlayers(room);
 
   for (let i = room.bullets.length - 1; i >= 0; i--) {
     const b = room.bullets[i];
@@ -1269,6 +1353,12 @@ function serializeRoom(room) {
     matchOver: room.matchOver,
     winnerId: room.winnerId,
     winKills: WIN_KILLS,
+    room: {
+      hostId: room.hostId || null,
+      visibility: room.visibility || "public",
+      maxPlayers: room.maxPlayers || ROOM_MAX_PLAYERS_DEFAULT,
+      locked: roomLocked(room),
+    },
   };
 }
 
@@ -1485,6 +1575,12 @@ function serializeRoomMeta(room) {
         : null,
     winKills: WIN_KILLS,
     players,
+    room: {
+      hostId: room.hostId || null,
+      visibility: room.visibility || "public",
+      maxPlayers: room.maxPlayers || ROOM_MAX_PLAYERS_DEFAULT,
+      locked: roomLocked(room),
+    },
   };
 }
 
@@ -1526,6 +1622,42 @@ io.on("connection", (socket) => {
   socket.on("join", (payload, cb) => {
     const roomId = String((payload && payload.roomId) || "public").slice(0, 32) || "public";
     const clientKey = String((payload && payload.clientKey) || "").slice(0, 64);
+    const reqVisibility = payload && payload.visibility === "private" ? "private" : "public";
+    const reqJoinCode = String((payload && payload.joinCode) || "").slice(0, 24);
+    const reqMaxPlayers = Math.max(
+      ROOM_MAX_PLAYERS_MIN,
+      Math.min(ROOM_MAX_PLAYERS_MAX, ((payload && payload.maxPlayers) | 0) || ROOM_MAX_PLAYERS_DEFAULT)
+    );
+    const existing = rooms.get(roomId);
+    const room = existing || getOrCreateRoom(roomId, {
+      visibility: reqVisibility,
+      joinCode: reqJoinCode,
+      maxPlayers: reqMaxPlayers,
+    });
+    let reclaimId = null;
+    if (clientKey) {
+      for (const [pid, p] of room.players.entries()) {
+        if (p.clientKey === clientKey && !p.connected) {
+          reclaimId = pid;
+          break;
+        }
+      }
+    }
+    if (roomLocked(room) && !reclaimId) {
+      if (typeof cb === "function")
+        cb({ ok: false, code: "ROOM_LOCKED", message: "房间进行中且已锁定", roomId });
+      return;
+    }
+    if (!reclaimId && room.players.size >= (room.maxPlayers || ROOM_MAX_PLAYERS_DEFAULT)) {
+      if (typeof cb === "function")
+        cb({ ok: false, code: "ROOM_FULL", message: "房间人数已满", roomId });
+      return;
+    }
+    if (room.visibility === "private" && room.joinCode && room.joinCode !== reqJoinCode && !reclaimId) {
+      if (typeof cb === "function")
+        cb({ ok: false, code: "BAD_JOIN_CODE", message: "房间口令错误", roomId });
+      return;
+    }
     if (currentRoomId) {
       const old = rooms.get(currentRoomId);
       if (old) {
@@ -1541,26 +1673,34 @@ io.on("connection", (socket) => {
     }
     socket.join(roomId);
     currentRoomId = roomId;
-    const room = getOrCreateRoom(roomId);
     let reused = false;
-    if (clientKey) {
-      for (const [pid, p] of room.players.entries()) {
-        if (p.clientKey === clientKey && !p.connected) {
-          reclaimPlayer(room, pid, socket.id);
-          reused = true;
-          break;
-        }
-      }
+    if (reclaimId) {
+      reclaimPlayer(room, reclaimId, socket.id);
+      reused = true;
     }
     if (!reused) {
       addPlayer(room, socket.id, clientKey);
+      if (!room.hostId) room.hostId = socket.id;
       if (!room.started) {
         room.matchOver = false;
         room.winnerId = null;
         room.waveReport = null;
       }
     }
-    if (typeof cb === "function") cb({ ok: true, roomId });
+    transferHostIfNeeded(room);
+    if (typeof cb === "function")
+      cb({
+        ok: true,
+        roomId,
+        code: "OK",
+        message: "joined",
+        room: {
+          hostId: room.hostId || null,
+          visibility: room.visibility || "public",
+          maxPlayers: room.maxPlayers || ROOM_MAX_PLAYERS_DEFAULT,
+          locked: roomLocked(room),
+        },
+      });
     emitRoomLobbySync(io, room);
   });
 
@@ -1587,9 +1727,22 @@ io.on("connection", (socket) => {
     const p = room.players.get(socket.id);
     if (!p) return;
     p.ready = !!(payload && payload.ready);
-    if (canStartRoom(room)) {
-      resetMatch(room);
+    emitRoomLobbySync(io, room);
+  });
+
+  socket.on("startMatch", () => {
+    if (!currentRoomId) return;
+    const room = rooms.get(currentRoomId);
+    if (!room) return;
+    if (room.hostId !== socket.id) {
+      socket.emit("roomError", { code: "NOT_HOST", message: "仅房主可开始游戏" });
+      return;
     }
+    if (!canStartRoom(room)) {
+      socket.emit("roomError", { code: "NOT_READY", message: "尚未满足全员准备" });
+      return;
+    }
+    resetMatch(room);
     emitRoomLobbySync(io, room);
   });
 
@@ -1597,6 +1750,10 @@ io.on("connection", (socket) => {
     if (!currentRoomId) return;
     const room = rooms.get(currentRoomId);
     if (!room || !room.players.has(socket.id)) return;
+    if (room.hostId !== socket.id) {
+      socket.emit("roomError", { code: "NOT_HOST", message: "仅房主可重开" });
+      return;
+    }
     room.started = false;
     room.matchOver = false;
     room.winnerId = null;
@@ -1620,6 +1777,7 @@ io.on("connection", (socket) => {
     p.connected = false;
     p.disconnectedUntil = Date.now() + DISCONNECT_GRACE_MS;
     if (!room.started) p.ready = false;
+    if (room.hostId === socket.id) transferHostIfNeeded(room);
     const after = rooms.get(roomId);
     if (after) emitRoomLobbySync(io, after);
   });

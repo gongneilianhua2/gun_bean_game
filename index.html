@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <canvas id="home-bg" aria-hidden="true" width="960" height="540"></canvas>
   <div id="ui">
     <div id="hud" class="hidden">
       <span id="score">得分 0</span>
@@ -39,9 +40,25 @@
           <span>房间名</span>
           <input type="text" id="room-id" placeholder="默认 public" maxlength="32" autocomplete="off" />
         </label>
+        <label class="field">
+          <span>房间类型</span>
+          <select id="room-visibility">
+            <option value="public">公开</option>
+            <option value="private">私密</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>人数上限（2-8）</span>
+          <input type="number" id="room-max-players" min="2" max="8" step="1" value="4" />
+        </label>
+        <label class="field hidden" id="room-code-wrap">
+          <span>房间口令</span>
+          <input type="text" id="room-join-code" placeholder="私密房口令" maxlength="24" autocomplete="off" />
+        </label>
         <p class="hint">好友输入同一房间名即可同场。联机需先在本机运行 <code>npm install</code> 与 <code>npm start</code>，再用浏览器打开控制台提示的地址（本地文件打开时会连到 <code>localhost:3333</code>）。</p>
         <p class="hint hint-subtle">每日挑战与日期种子修正<strong>仅单机生效</strong>；联机沿用服务器规则（实验性提示，与今日挑战无关）。</p>
         <button type="button" id="btn-join" class="primary">进入房间</button>
+        <button type="button" id="btn-start" class="ghost hidden">房主开始</button>
         <p id="net-status" class="net-status"></p>
       </div>
     </div>
@@ -75,7 +92,7 @@
       </div>
     </div>
   </div>
-  <canvas id="game" width="960" height="540"></canvas>
+  <canvas id="game" class="hidden" width="960" height="540"></canvas>
   <script src="https://cdn.socket.io/4.8.0/socket.io.min.js"></script>
   <script src="game.js"></script>
 </body>

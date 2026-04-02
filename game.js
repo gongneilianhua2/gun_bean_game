@@ -14,6 +14,10 @@
   const titleScreen = document.getElementById("title-screen");
   const onlinePanel = document.getElementById("online-panel");
   const roomIdInput = document.getElementById("room-id");
+  const roomVisibilityInput = document.getElementById("room-visibility");
+  const roomMaxPlayersInput = document.getElementById("room-max-players");
+  const roomCodeWrap = document.getElementById("room-code-wrap");
+  const roomJoinCodeInput = document.getElementById("room-join-code");
   const netStatus = document.getElementById("net-status");
   const gameOverEl = document.getElementById("game-over");
   const goTitle = document.getElementById("go-title");
@@ -21,6 +25,7 @@
   const btnOffline = document.getElementById("btn-offline");
   const btnOnline = document.getElementById("btn-online");
   const btnJoin = document.getElementById("btn-join");
+  const btnStart = document.getElementById("btn-start");
   const restartBtn = document.getElementById("restart-btn");
   const btnBackMenu = document.getElementById("btn-back-menu");
   const hud = document.getElementById("hud");
@@ -40,6 +45,11 @@
   const progressSummaryEl = document.getElementById("progress-summary");
   const dailyChallengeSummaryEl = document.getElementById("daily-challenge-summary");
   const achievementMiniEl = document.getElementById("achievement-mini");
+  const homeBgCanvas = document.getElementById("home-bg");
+  let homeBgCtx = null;
+  let homeBgRaf = 0;
+  let homeBgAnimActive = false;
+  let homeBgBackingDpr = 1;
 
   /** 逻辑场地尺寸（与 server.js 一致）；物理分辨率由画布 backing store × letterbox 拉伸 */
   const W = 960;
@@ -61,6 +71,62 @@
     }
   }
 
+  function syncHomeBgCanvas() {
+    if (!homeBgCanvas) return;
+    const cssW = Math.max(1, window.innerWidth || 1);
+    const cssH = Math.max(1, window.innerHeight || 1);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    homeBgBackingDpr = dpr;
+    const bw = Math.max(1, Math.round(cssW * dpr));
+    const bh = Math.max(1, Math.round(cssH * dpr));
+    if (homeBgCanvas.width !== bw || homeBgCanvas.height !== bh) {
+      homeBgCanvas.width = bw;
+      homeBgCanvas.height = bh;
+    }
+  }
+
+  function tickHomeBg() {
+    homeBgRaf = 0;
+    if (!homeBgAnimActive || !homeBgCanvas) return;
+    homeBgCtx = homeBgCtx || homeBgCanvas.getContext("2d");
+    if (!homeBgCtx) return;
+    syncHomeBgCanvas();
+    const cssW = Math.max(1, window.innerWidth || 1);
+    const cssH = Math.max(1, window.innerHeight || 1);
+    const dpr = homeBgBackingDpr;
+    homeBgCtx.setTransform(1, 0, 0, 1, 0, 0);
+    homeBgCtx.clearRect(0, 0, homeBgCanvas.width, homeBgCanvas.height);
+    homeBgCtx.scale(dpr, dpr);
+    drawMarginDecor(homeBgCtx, cssW, cssH, 0, 0, 1, null, { homeBg: true });
+    if (homeBgAnimActive) homeBgRaf = requestAnimationFrame(tickHomeBg);
+  }
+
+  function startHomeBgAnim() {
+    if (!homeBgCanvas) return;
+    homeBgAnimActive = true;
+    if (!homeBgRaf) homeBgRaf = requestAnimationFrame(tickHomeBg);
+  }
+
+  function stopHomeBgAnim() {
+    homeBgAnimActive = false;
+    if (homeBgRaf) {
+      cancelAnimationFrame(homeBgRaf);
+      homeBgRaf = 0;
+    }
+  }
+
+  function setCanvasVisible(visible) {
+    if (!canvas) return;
+    canvas.classList.toggle("hidden", !visible);
+  }
+
+  function setHomeBeansVisible(visible) {
+    if (!homeBgCanvas) return;
+    homeBgCanvas.classList.toggle("hidden", !visible);
+    if (visible) startHomeBgAnim();
+    else stopHomeBgAnim();
+  }
+
   function arenaLetterboxParams(rect) {
     const cssW = rect.width;
     const cssH = rect.height;
@@ -79,7 +145,7 @@
     const dpr = canvasBackingDpr;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
-    drawMarginDecor(cssW, cssH, ox, oy, scale, theme);
+    drawMarginDecor(ctx, cssW, cssH, ox, oy, scale, theme);
     ctx.translate(ox, oy);
     ctx.scale(scale, scale);
   }
@@ -123,6 +189,10 @@
   const EDGE_REPEL_FORCE = 260;
   const WALL_TURN_ASSIST_ZONE = 56;
   const WALL_TURN_ASSIST = 0.38;
+  const SEPARATION_ITERS = 3;
+  const SEPARATION_MARGIN = 2;
+  const PLAYER_REPEL_R = PR + 14;
+  const PLAYER_REPEL_STRENGTH = 0.58;
   /** 设为 true 时不生成小怪，方便单独测手感 */
   const OFFLINE_ENEMIES_DISABLED = false;
 
@@ -637,6 +707,52 @@
     return { x: x / l, y: y / l };
   }
 
+  function clampEnemyToArenaOffline(e) {
+    e.x = Math.max(e.r + 2, Math.min(W - e.r - 2, e.x));
+    e.y = Math.max(e.r + 2, Math.min(H - e.r - 2, e.y));
+  }
+
+  function separateEnemiesOffline(list) {
+    for (let it = 0; it < SEPARATION_ITERS; it++) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d = Math.hypot(dx, dy) || 0.0001;
+          const minD = a.r + b.r + SEPARATION_MARGIN;
+          if (d >= minD) continue;
+          const overlap = (minD - d) * 0.5;
+          const nx = dx / d;
+          const ny = dy / d;
+          a.x -= nx * overlap;
+          a.y -= ny * overlap;
+          b.x += nx * overlap;
+          b.y += ny * overlap;
+        }
+      }
+      for (const e of list) clampEnemyToArenaOffline(e);
+    }
+  }
+
+  function repelEnemiesFromPlayerOffline(list, p) {
+    if (!p || p.hp <= 0) return;
+    for (const e of list) {
+      const dx = e.x - p.x;
+      const dy = e.y - p.y;
+      const d = Math.hypot(dx, dy) || 0.0001;
+      const minD = e.r + PLAYER_REPEL_R;
+      if (d >= minD) continue;
+      const push = (minD - d) * PLAYER_REPEL_STRENGTH;
+      const nx = dx / d;
+      const ny = dy / d;
+      e.x += nx * push;
+      e.y += ny * push;
+      clampEnemyToArenaOffline(e);
+    }
+  }
+
   function rand(a, b) {
     return a + Math.random() * (b - a);
   }
@@ -692,6 +808,7 @@
     base.waveReport = m.waveReport;
     if (m.bossPhaseBanner !== undefined) base.bossPhaseBanner = m.bossPhaseBanner;
     base.winKills = m.winKills;
+    if (m.room !== undefined) base.room = m.room;
     for (const mp of m.players) {
       const t = base.players.find((q) => q.id === mp.id);
       if (t) Object.assign(t, mp);
@@ -1161,9 +1278,26 @@
     if (!netState || !socket) return;
     const me = netState.players.find((p) => p.id === socket.id);
     const readyCount = netState.players.filter((p) => p.ready).length;
+    const roomCfg = netState.room || {
+      hostId: null,
+      visibility: "public",
+      maxPlayers: netState.players.length || 4,
+      locked: false,
+    };
+    const isHost = !!(me && roomCfg.hostId === socket.id);
+    const allReady = netState.players.length > 0 && readyCount === netState.players.length;
     if (hudOnlineMeta) hudOnlineMeta.classList.remove("hidden");
     if (hudRoom) hudRoom.textContent = "房间 " + (netState.roomId || "");
-    if (hudPlayers) hudPlayers.textContent = "在线 " + netState.players.length + " 人";
+    if (hudPlayers) {
+      hudPlayers.textContent =
+        "在线 " +
+        netState.players.length +
+        "/" +
+        (roomCfg.maxPlayers || 4) +
+        " · " +
+        (roomCfg.visibility === "private" ? "私密" : "公开") +
+        (roomCfg.locked ? " · 锁定" : "");
+    }
     if (me) {
       const lv = (netState.levelIndex || 0) + 1;
       const lvN = netState.levelCount || 1;
@@ -1237,6 +1371,14 @@
         btnReady.textContent = me && me.ready ? "已准备（点我取消）" : "准备";
       }
     }
+    if (btnStart) {
+      const showStart = mode === "online" && !netState.started && !netState.matchOver && isHost;
+      btnStart.classList.toggle("hidden", !showStart);
+      if (showStart) {
+        btnStart.disabled = !allReady;
+        btnStart.textContent = allReady ? "房主开始" : "房主开始（等待全员准备）";
+      }
+    }
   }
 
   function startOffline(levelIndex) {
@@ -1254,6 +1396,8 @@
     onlinePanel.classList.add("hidden");
     offlineLevelPanel.classList.add("hidden");
     hud.classList.remove("hidden");
+    setHomeBeansVisible(false);
+    setCanvasVisible(true);
     lobbyHint.classList.add("hidden");
     if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
     if (hudOnlineBadges) {
@@ -1292,6 +1436,12 @@
     lastSentInputSig = "";
   }
 
+  function updateRoomCodeFieldVisibility() {
+    if (!roomCodeWrap || !roomVisibilityInput) return;
+    const isPrivate = roomVisibilityInput.value === "private";
+    roomCodeWrap.classList.toggle("hidden", !isPrivate);
+  }
+
   function connectOnline() {
     netStatus.textContent = "连接中…";
     teardownSocket();
@@ -1299,13 +1449,56 @@
     socket.on("connect", () => {
       netStatus.textContent = "已连接";
       const roomId = (roomIdInput.value || "").trim().slice(0, 32) || "public";
-      socket.emit("join", { roomId, clientKey: getClientKey() });
+      const visibility =
+        roomVisibilityInput && roomVisibilityInput.value === "private" ? "private" : "public";
+      const maxPlayers = Math.max(
+        2,
+        Math.min(8, ((roomMaxPlayersInput && roomMaxPlayersInput.value) | 0) || 4)
+      );
+      const joinCode = (roomJoinCodeInput && roomJoinCodeInput.value
+        ? roomJoinCodeInput.value
+        : ""
+      )
+        .trim()
+        .slice(0, 24);
+      socket.emit(
+        "join",
+        { roomId, clientKey: getClientKey(), visibility, maxPlayers, joinCode },
+        (ack) => {
+          if (!ack || !ack.ok) {
+            netStatus.textContent = (ack && ack.message) || "加入失败";
+          }
+        }
+      );
     });
     socket.on("connect_error", () => {
       netStatus.textContent = "无法连接服务器，请确认已运行 npm start（默认端口 3333）";
     });
     socket.on("disconnect", () => {
-      if (mode === "online") netStatus.textContent = "连接已断开";
+      if (mode === "online") {
+        netStatus.textContent = "连接已断开";
+        gameOverEl.classList.add("hidden");
+        titleScreen.classList.remove("hidden");
+        offlineLevelPanel.classList.add("hidden");
+        hud.classList.add("hidden");
+        lobbyHint.classList.add("hidden");
+        if (perkOverlay) perkOverlay.classList.add("hidden");
+        if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
+        if (hudOnlineBadges) {
+          hudOnlineBadges.classList.add("hidden");
+          hudOnlineBadges.innerHTML = "";
+        }
+        if (btnStart) btnStart.classList.add("hidden");
+        setCanvasVisible(false);
+        setHomeBeansVisible(true);
+        mode = "menu";
+        state = "menu";
+        prevMyShotFx = 0;
+      }
+    });
+    socket.on("roomError", (e) => {
+      if (mode !== "online") return;
+      netStatus.textContent = (e && e.message) || "房间操作失败";
     });
     socket.on("state", (s) => {
       if (!netUseSplitSync) {
@@ -1379,12 +1572,15 @@
     lastBattleReportPlain = buildOnlineShareCardPlain(won);
     gameOverEl.classList.remove("hidden");
     if (btnReady) btnReady.classList.add("hidden");
+    if (btnStart) btnStart.classList.add("hidden");
   }
 
   function startOnlinePlay() {
     gameOverEl.classList.add("hidden");
     titleScreen.classList.add("hidden");
     hud.classList.remove("hidden");
+    setHomeBeansVisible(false);
+    setCanvasVisible(true);
     lobbyHint.classList.remove("hidden");
     const rect = canvas.getBoundingClientRect();
     mouse.x = rect.left + rect.width * 0.5;
@@ -1502,63 +1698,132 @@
     };
   }
 
-  function drawDecorBean(cx, cy, r, aim, hexFill, phase, tAnim) {
+  function drawDecorBean(cx, cy, r, aim, hexFill, phase, tAnim, c) {
     const bob = Math.sin(tAnim * 2.1 + phase) * (r * 0.12);
     const sway = Math.sin(tAnim * 0.65 + phase * 1.7) * 0.12;
-    ctx.save();
-    ctx.translate(cx, cy + bob);
-    ctx.rotate(aim + sway);
-    ctx.fillStyle = hexFill;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, r, r * 0.9, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.88)";
-    ctx.beginPath();
-    ctx.arc(-r * 0.3, -r * 0.14, r * 0.2, 0, Math.PI * 2);
-    ctx.arc(r * 0.3, -r * 0.14, r * 0.2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "rgba(20,24,32,0.92)";
-    ctx.beginPath();
-    ctx.arc(-r * 0.3, -r * 0.14, r * 0.09, 0, Math.PI * 2);
-    ctx.arc(r * 0.3, -r * 0.14, r * 0.09, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.28)";
-    ctx.lineWidth = Math.max(1, r * 0.11);
-    ctx.beginPath();
-    ctx.moveTo(r * 0.32, r * 0.02);
-    ctx.lineTo(r * 1.22, r * 0.02);
-    ctx.stroke();
-    ctx.strokeStyle = hexFill;
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = Math.max(1.2, r * 0.14);
-    ctx.beginPath();
-    ctx.arc(0, r * 0.35, r * 0.55, 0.15 * Math.PI, 0.85 * Math.PI);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.restore();
+    c.save();
+    c.translate(cx, cy + bob);
+    c.rotate(aim + sway);
+    c.fillStyle = hexFill;
+    c.beginPath();
+    c.ellipse(0, 0, r, r * 0.9, 0, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "rgba(255,255,255,0.88)";
+    c.beginPath();
+    c.arc(-r * 0.3, -r * 0.14, r * 0.2, 0, Math.PI * 2);
+    c.arc(r * 0.3, -r * 0.14, r * 0.2, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = "rgba(20,24,32,0.92)";
+    c.beginPath();
+    c.arc(-r * 0.3, -r * 0.14, r * 0.09, 0, Math.PI * 2);
+    c.arc(r * 0.3, -r * 0.14, r * 0.09, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = "rgba(0,0,0,0.28)";
+    c.lineWidth = Math.max(1, r * 0.11);
+    c.beginPath();
+    c.moveTo(r * 0.32, r * 0.02);
+    c.lineTo(r * 1.22, r * 0.02);
+    c.stroke();
+    c.strokeStyle = hexFill;
+    c.globalAlpha = 0.35;
+    c.lineWidth = Math.max(1.2, r * 0.14);
+    c.beginPath();
+    c.arc(0, r * 0.35, r * 0.55, 0.15 * Math.PI, 0.85 * Math.PI);
+    c.stroke();
+    c.globalAlpha = 1;
+    c.restore();
   }
 
-  function drawMarginWakeLine(yBase, cssW, tAnim, waveRgb, ampl, phase) {
-    ctx.strokeStyle = rgbaFrom3(waveRgb, 0.14);
-    ctx.lineWidth = 1.15;
-    ctx.beginPath();
+  function drawMarginWakeLine(c, yBase, cssW, tAnim, waveRgb, ampl, phase) {
+    c.strokeStyle = rgbaFrom3(waveRgb, 0.14);
+    c.lineWidth = 1.15;
+    c.beginPath();
     for (let x = 0; x <= cssW; x += 5) {
       const yy = yBase + Math.sin(x * 0.014 + tAnim * 2.2 + phase) * ampl;
-      if (x === 0) ctx.moveTo(x, yy);
-      else ctx.lineTo(x, yy);
+      if (x === 0) c.moveTo(x, yy);
+      else c.lineTo(x, yy);
     }
-    ctx.stroke();
-    ctx.strokeStyle = rgbaFrom3(waveRgb, 0.08);
-    ctx.beginPath();
+    c.stroke();
+    c.strokeStyle = rgbaFrom3(waveRgb, 0.08);
+    c.beginPath();
     for (let x = 0; x <= cssW; x += 5) {
       const yy = yBase + Math.sin(x * 0.011 + tAnim * 1.6 + phase + 1.2) * ampl * 0.7;
-      if (x === 0) ctx.moveTo(x, yy);
-      else ctx.lineTo(x, yy);
+      if (x === 0) c.moveTo(x, yy);
+      else c.lineTo(x, yy);
     }
-    ctx.stroke();
+    c.stroke();
   }
 
-  function drawMarginDecor(cssW, cssH, ox, oy, s, theme) {
+  function drawMarginDecor(c, cssW, cssH, ox, oy, s, theme, decorOpts) {
+    decorOpts = decorOpts || {};
+    const homeBg = !!decorOpts.homeBg;
+    const pal = marginPaletteFromTheme(theme);
+    const t = performance.now() * 0.001;
+
+    if (homeBg) {
+      c.save();
+      const g = c.createLinearGradient(0, 0, 0, cssH);
+      g.addColorStop(0, rgbaFrom3(pal.top, 0.97));
+      g.addColorStop(0.52, rgbaFrom3(pal.mid, 0.93));
+      g.addColorStop(1, rgbaFrom3(pal.bot, 0.9));
+      c.fillStyle = g;
+      c.fillRect(0, 0, cssW, cssH);
+
+      c.strokeStyle = rgbaFrom3(pal.rim, 0.16);
+      c.lineWidth = 1;
+      drawMarginWakeLine(c, cssH * 0.16, cssW, t, pal.wave, 4.8, 0);
+      drawMarginWakeLine(c, cssH * 0.38, cssW, t, pal.wave, 3.6, 1.1);
+      drawMarginWakeLine(c, cssH * 0.62, cssW, t, pal.wave, 4.4, 2.2);
+      drawMarginWakeLine(c, cssH * 0.86, cssW, t, pal.wave, 3.9, 3.3);
+
+      const cols = ["#4ecdc4", "#e94560", "#ffe66d", "#95e1d3"];
+      const area = cssW * cssH;
+      const nBeansRaw = Math.min(80, Math.max(32, Math.round(area / 11000)));
+      const nBeans = Math.max(14, Math.round(nBeansRaw * 0.448));
+      const tBean = t * 0.56;
+      for (let i = 0; i < nBeans; i++) {
+        const j = 2.2 + i * 19.17;
+        let u =
+          0.08 +
+          0.84 *
+            (0.5 +
+              0.5 * Math.sin(j + tBean * 0.35) +
+              0.25 * Math.sin(tBean * 0.22 + i * 1.1));
+        let v =
+          0.06 +
+          0.88 *
+            (0.5 +
+              0.5 * Math.cos(j * 0.8 + tBean * 0.28) +
+              0.2 * Math.sin(tBean * 0.31 + i * 0.7));
+        const br = 9 + (i % 4) * 2.4;
+        u = Math.max(br / cssW, Math.min(1 - br / cssW, u));
+        v = Math.max(br / cssH, Math.min(1 - br / cssH, v));
+        const ux = cssW * u;
+        const uy = cssH * v;
+        const aim = tBean * 0.4 + i * 0.85;
+        drawDecorBean(ux, uy, br, aim, cols[i % cols.length], j, tBean, c);
+      }
+
+      const step = 36;
+      const thresh = 0.44;
+      for (let x = step; x < cssW; x += step) {
+        for (let y = step; y < cssH; y += step) {
+          const ix = (x / step) | 0;
+          const iy = (y / step) | 0;
+          const n = Math.sin(ix * 2.1 + iy * 3.7 + t * 0.5) * 0.5 + 0.5;
+          if (n <= thresh) continue;
+          const pr = 2.2 + (n - thresh) * 6;
+          c.fillStyle = rgbaFrom3(pal.wave, 0.14 + (n - thresh) * 0.45);
+          c.beginPath();
+          c.ellipse(x, y, pr, pr * 0.88, (ix + iy + t) * 0.2, 0, Math.PI * 2);
+          c.fill();
+        }
+      }
+
+      c.restore();
+      return;
+    }
+
     const aw = W * s;
     const ah = H * s;
     const topH = oy;
@@ -1569,21 +1834,18 @@
     const rightW = cssW - rightX;
     if (topH < 0.5 && botH < 0.5 && leftW < 0.5 && rightW < 0.5) return;
 
-    const pal = marginPaletteFromTheme(theme);
-    const t = performance.now() * 0.001;
-
-    ctx.save();
+    c.save();
 
     function fillBand(x, y, bw, bh, leanTop) {
       if (bh < 0.5 || bw < 0.5) return;
       const g = leanTop
-        ? ctx.createLinearGradient(0, y, 0, y + bh)
-        : ctx.createLinearGradient(0, y + bh, 0, y);
+        ? c.createLinearGradient(0, y, 0, y + bh)
+        : c.createLinearGradient(0, y + bh, 0, y);
       g.addColorStop(0, rgbaFrom3(pal.top, 0.92));
       g.addColorStop(0.55, rgbaFrom3(pal.mid, 0.88));
       g.addColorStop(1, rgbaFrom3(pal.bot, 0.82));
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, bw, bh);
+      c.fillStyle = g;
+      c.fillRect(x, y, bw, bh);
     }
 
     fillBand(0, 0, cssW, topH, true);
@@ -1591,10 +1853,10 @@
     if (leftW > 0.5) fillBand(0, oy, leftW, ah, true);
     if (rightW > 0.5) fillBand(rightX, oy, rightW, ah, true);
 
-    ctx.strokeStyle = rgbaFrom3(pal.rim, 0.22);
-    ctx.lineWidth = 1;
-    if (topH > 1) drawMarginWakeLine(topH - 6, cssW, t, pal.wave, 4.5, 0);
-    if (botH > 1) drawMarginWakeLine(botY + 8, cssW, t, pal.wave, 4, 1.7);
+    c.strokeStyle = rgbaFrom3(pal.rim, 0.22);
+    c.lineWidth = 1;
+    if (topH > 1) drawMarginWakeLine(c, topH - 6, cssW, t, pal.wave, 4.5, 0);
+    if (botH > 1) drawMarginWakeLine(c, botY + 8, cssW, t, pal.wave, 4, 1.7);
 
     function beansInRect(rx, ry, rw, rh, count, seed) {
       if (rw < 28 || rh < 28) return;
@@ -1619,7 +1881,7 @@
         const ux = rx + rw * u;
         const uy = ry + rh * v;
         const aim = t * 0.4 + i * 0.85;
-        drawDecorBean(ux, uy, br, aim, cols[i % cols.length], j, t);
+        drawDecorBean(ux, uy, br, aim, cols[i % cols.length], j, t, c);
       }
     }
 
@@ -1639,14 +1901,14 @@
         const n = Math.sin(ix * 2.1 + iy * 3.7 + t * 0.5) * 0.5 + 0.5;
         if (n <= 0.52) continue;
         const pr = 2.2 + (n - 0.52) * 5;
-        ctx.fillStyle = rgbaFrom3(pal.wave, 0.12 + (n - 0.52) * 0.35);
-        ctx.beginPath();
-        ctx.ellipse(x, y, pr, pr * 0.88, (ix + iy + t) * 0.2, 0, Math.PI * 2);
-        ctx.fill();
+        c.fillStyle = rgbaFrom3(pal.wave, 0.12 + (n - 0.52) * 0.35);
+        c.beginPath();
+        c.ellipse(x, y, pr, pr * 0.88, (ix + iy + t) * 0.2, 0, Math.PI * 2);
+        c.fill();
       }
     }
 
-    ctx.restore();
+    c.restore();
   }
 
   function drawArena(theme) {
@@ -2592,26 +2854,9 @@
         }
       }
 
-      // Prevent enemy beans from passing through each other.
-      for (let i = 0; i < enemies.length; i++) {
-        for (let j = i + 1; j < enemies.length; j++) {
-          const a = enemies[i];
-          const b = enemies[j];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const d = Math.hypot(dx, dy) || 0.0001;
-          const minD = a.r + b.r + 2;
-          if (d < minD) {
-            const overlap = (minD - d) * 0.5;
-            const nx = dx / d;
-            const ny = dy / d;
-            a.x -= nx * overlap;
-            a.y -= ny * overlap;
-            b.x += nx * overlap;
-            b.y += ny * overlap;
-          }
-        }
-      }
+      repelEnemiesFromPlayerOffline(enemies, player);
+      separateEnemiesOffline(enemies);
+      repelEnemiesFromPlayerOffline(enemies, player);
 
       outer: for (let bi = bullets.length - 1; bi >= 0; bi--) {
         const b = bullets[bi];
@@ -3155,6 +3400,16 @@
       socket.emit("setReady", { ready: next });
     });
   }
+  if (btnStart) {
+    btnStart.addEventListener("click", () => {
+      if (!socket || !socket.connected) return;
+      socket.emit("startMatch");
+    });
+  }
+  if (roomVisibilityInput) {
+    roomVisibilityInput.addEventListener("change", updateRoomCodeFieldVisibility);
+    updateRoomCodeFieldVisibility();
+  }
 
   restartBtn.addEventListener("click", () => {
     hideCopyReportHint();
@@ -3187,6 +3442,8 @@
     titleScreen.classList.remove("hidden");
     offlineLevelPanel.classList.add("hidden");
     hud.classList.add("hidden");
+    setCanvasVisible(false);
+    setHomeBeansVisible(true);
     lobbyHint.classList.add("hidden");
     if (perkOverlay) perkOverlay.classList.add("hidden");
     if (hudOnlineMeta) hudOnlineMeta.classList.add("hidden");
@@ -3194,6 +3451,7 @@
       hudOnlineBadges.classList.add("hidden");
       hudOnlineBadges.innerHTML = "";
     }
+    if (btnStart) btnStart.classList.add("hidden");
     mode = "menu";
     state = "menu";
     prevMyShotFx = 0;
@@ -3232,5 +3490,6 @@
   }
 
   refreshTitleMeta();
+  startHomeBgAnim();
   requestAnimationFrame(frame);
 })();
